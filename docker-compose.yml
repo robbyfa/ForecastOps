@@ -1,0 +1,75 @@
+name: forecastops
+x-app: &app
+  build: .
+  environment: &environment
+    FORECASTOPS_DATABASE_URL: postgresql+psycopg://forecastops:local-demo-only@postgres:5432/forecastops
+    FORECASTOPS_TRACKING_URI: http://mlflow:5000
+    FORECASTOPS_ARTIFACT_DIR: /app/artifacts
+  volumes:
+    - artifacts:/app/artifacts
+    - sales:/app/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mlflow:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: forecastops
+      POSTGRES_PASSWORD: local-demo-only
+      POSTGRES_DB: forecastops
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forecastops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  mlflow:
+    build: .
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "sqlite:////app/artifacts/mlflow.db", "--artifacts-destination", "/app/artifacts/mlflow-artifacts", "--serve-artifacts", "--allowed-hosts", "mlflow:5000,localhost:5000,127.0.0.1:5000"]
+    ports: ["127.0.0.1:5000:5000"]
+    volumes: ["tracking:/app/artifacts"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  worker:
+    <<: *app
+    profiles: ["jobs"]
+    command: ["forecastops", "demo"]
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: local-demo-only
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+volumes:
+  postgres:
+  artifacts:
+  sales:
+  tracking:
+  grafana:

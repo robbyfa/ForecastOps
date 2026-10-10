@@ -1,0 +1,55 @@
+name: Deploy AWS
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: forecastops-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.3"
+      - run: uv sync --frozen --python 3.12
+      - run: uv run ruff check . && uv run pytest -q
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build and publish immutable release
+        env:
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REVISION: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          IMAGE="$REGISTRY/$REPOSITORY:$REVISION-$RUN_ID-$ATTEMPT"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "RELEASE_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Download task definition
+        env:
+          FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        run: aws ecs describe-task-definition --task-definition "$FAMILY" --query taskDefinition > task-definition.json
+      - uses: aws-actions/amazon-ecs-render-task-definition@v1
+        id: render
+        with:
+          task-definition: task-definition.json
+          container-name: api
+          image: ${{ env.RELEASE_IMAGE }}
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true

@@ -1,0 +1,8 @@
+region              = "eu-west-1"
+vpc_id              = "vpc-REPLACE"
+subnet_ids          = ["subnet-REPLACE-A", "subnet-REPLACE-B"]
+allowed_cidrs       = ["192.0.2.1/32"]
+database_secret_arn = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:REPLACE"
+tracking_uri        = "http://mlflow.internal:5000"
+image_tag           = "bootstrap"
+desired_count       = 0

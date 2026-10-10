@@ -1,0 +1,24 @@
+groups:
+  - name: forecastops
+    rules:
+      - alert: ForecastApiUnavailable
+        expr: up{job="forecastops"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Forecast API is unavailable
+      - alert: ForecastRetrainingRequired
+        expr: forecastops_retraining_required == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Observed demand performance crossed the retraining threshold
+      - alert: ForecastFeatureDrift
+        expr: forecastops_drift_psi > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Review a change in feature distribution
