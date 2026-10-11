@@ -136,6 +136,7 @@ def execute(args, settings):
     return {
         **cycle_result,
         "forecast_rows": len(rows),
+        "batch_id": rows[0].get("batch_id"),
         "model_version": rows[0]["model_version"],
         "forecast_date": rows[0]["forecast_date"],
         "database": "configured forecast store",

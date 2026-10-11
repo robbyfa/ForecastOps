@@ -43,22 +43,31 @@ def monitor(data, settings, database, *, now=None, replay=False):
     database.initialize()
     with database.engine.connect() as conn:
         statement = select(forecasts).where(
-            forecasts.c.model_version == champion["version"],
             forecasts.c.target_date >= start.date(),
             forecasts.c.target_date <= data.date.max().date(),
         )
         stored = pd.DataFrame(conn.execute(statement).mappings().all())
     performance, matched, coverage = None, 0, 0.0
     scored = pd.DataFrame()
+    by_model = {}
     if not stored.empty:
         stored["target_date"] = pd.to_datetime(stored.target_date)
         stored["forecast_date"] = pd.to_datetime(stored.forecast_date)
         stored["horizon"] = (stored.target_date - stored.forecast_date).dt.days
-        stored = stored[stored.horizon.between(1, champion["horizon"])]
+        stored = stored[stored.horizon.between(1, 14)]
         if not replay:
             issued = pd.to_datetime(stored.created_at, utc=True)
-            # Late backfills cannot count as forecasts issued before the target day.
-            stored = stored[issued.lt(stored.target_date.dt.tz_localize("UTC")) & issued.le(now)]
+            # Lead time is measured from origin, not when a late backfill reaches the DB.
+            origin_start = stored.forecast_date.dt.tz_localize("UTC")
+            stored = stored[
+                issued.ge(origin_start)
+                & issued.lt(origin_start + pd.Timedelta(days=1))
+                & issued.le(now)
+            ]
+        # Preserve the first timely decision for each origin, even across model changes.
+        stored = stored.sort_values(["created_at", "id"]).drop_duplicates(
+            ["forecast_date", "target_date", "store_id", "item_id"], keep="first"
+        )
         scored = stored.merge(
             data.rename(columns={"date": "target_date", "demand": "target"}),
             on=["store_id", "item_id", "target_date"],
@@ -66,8 +75,21 @@ def monitor(data, settings, database, *, now=None, replay=False):
             validate="many_to_one",
         )
         if not scored.empty:
+            for version, group in scored.groupby("model_version"):
+                by_model[version] = {
+                    "matched_actuals": len(group),
+                    "performance": segmented(group),
+                    "by_horizon": {
+                        str(h): {"matched_actuals": len(part), "performance": segmented(part)}
+                        for h, part in group.groupby("horizon")
+                    },
+                }
+            scored = scored[
+                scored.model_version.eq(champion["version"])
+                & scored.horizon.le(champion["horizon"])
+            ]
             matched = len(scored)
-            performance = segmented(scored)
+            performance = segmented(scored) if matched else None
     by_horizon = {}
     references = champion.get("holdout_by_horizon", {})
     degraded_horizons = []
@@ -126,6 +148,8 @@ def monitor(data, settings, database, *, now=None, replay=False):
         "performance": performance,
         "aggregate_policy": "pooled available horizon predictions; triggers are horizon-specific",
         "by_horizon": by_horizon,
+        "by_model": by_model,
+        "issuance_policy": "first prediction issued within the origin UTC day; all models retained",
         "degraded_horizons": degraded_horizons,
         "matched_actuals": matched,
         "coverage": coverage,
@@ -136,8 +160,8 @@ def monitor(data, settings, database, *, now=None, replay=False):
         "reason": "performance_degraded" if would_retrain else "no_performance_trigger",
         "drift_alert": any(v["psi"] > 0.2 for v in drift.values()),
     }
-    if not stored.empty and reference.get("prediction"):
-        report["prediction_drift_psi"] = psi(reference["prediction"], stored.prediction)
+    if not scored.empty and reference.get("prediction"):
+        report["prediction_drift_psi"] = psi(reference["prediction"], scored.prediction)
     write_json(settings.artifact_dir / "monitoring.json", report)
     if report["retraining_required"]:
         write_json(settings.artifact_dir / "retrain-request.json", report)

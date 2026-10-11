@@ -1,0 +1,66 @@
+# Isolated operational test stack. No shared volumes or ports with the demo stack.
+x-app: &app
+  image: ${FORECASTOPS_TEST_IMAGE:-forecastops:ci}
+  environment: &environment
+    FORECASTOPS_DATABASE_URL: postgresql+psycopg://forecastops:local-test-only@postgres:5432/forecastops
+    FORECASTOPS_TRACKING_URI: http://mlflow:5000
+    FORECASTOPS_ARTIFACT_DIR: /app/artifacts
+    MLFLOW_DISABLE_AGENT_HINT: "1"
+  volumes:
+    - artifacts:/app/artifacts
+    - sales:/app/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mlflow:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: forecastops
+      POSTGRES_PASSWORD: local-test-only
+      POSTGRES_DB: forecastops
+    ports: ["127.0.0.1::5432"]
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forecastops"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  mlflow:
+    image: ${FORECASTOPS_TEST_IMAGE:-forecastops:ci}
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "sqlite:////app/artifacts/mlflow.db", "--artifacts-destination", "/app/artifacts/mlflow-artifacts", "--serve-artifacts", "--allowed-hosts", "mlflow:5000,localhost:5000"]
+    volumes: ["tracking:/app/artifacts"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+  api:
+    <<: *app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  worker:
+    <<: *app
+    profiles: ["jobs"]
+    command: ["forecastops", "demo", "--days", "140", "--items", "3", "--stores", "2"]
+  verifier:
+    <<: *app
+    profiles: ["jobs"]
+    volumes:
+      - artifacts:/app/artifacts
+      - sales:/app/data
+      - ./scripts/verify_stack.py:/checks/verify_stack.py:ro
+    command: ["python", "/checks/verify_stack.py"]
+
+volumes:
+  artifacts:
+  sales:
+  tracking:
+  postgres:

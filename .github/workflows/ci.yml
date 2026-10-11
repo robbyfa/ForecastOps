@@ -30,8 +30,27 @@ jobs:
       - run: uv run python scripts/verify_demo.py
       - run: docker compose config --quiet
       - run: docker build --build-arg GIT_COMMIT="$GITHUB_SHA" --build-arg GIT_DIRTY=false -t forecastops:ci .
+      - name: Start isolated Postgres and HTTP MLflow stack
+        run: docker compose -p forecastops-ci -f compose.integration.yml up -d --wait postgres mlflow api
+      - name: Run database contract against PostgreSQL
+        run: |
+          PG_ADDRESS=$(docker compose -p forecastops-ci -f compose.integration.yml port postgres 5432)
+          export FORECASTOPS_TEST_POSTGRES_URL="postgresql+psycopg://forecastops:local-test-only@$PG_ADDRESS/forecastops"
+          uv run pytest tests/integration/test_database.py -q
+      - run: docker compose -p forecastops-ci -f compose.integration.yml run --rm worker
+      - run: docker compose -p forecastops-ci -f compose.integration.yml run --rm verifier
+      - run: docker compose -p forecastops-ci -f compose.integration.yml cp api:/app/artifacts/stack-verification.json artifacts/stack-verification.json
+      - name: Collect integration logs
+        if: always()
+        run: docker compose -p forecastops-ci -f compose.integration.yml logs --no-color > integration-stack.log
+      - name: Remove isolated integration stack
+        if: always()
+        run: docker compose -p forecastops-ci -f compose.integration.yml down -v --remove-orphans
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: training-evidence
-          path: artifacts/latest-training.json
+          path: |
+            artifacts/latest-training.json
+            artifacts/stack-verification.json
+            integration-stack.log

@@ -22,6 +22,7 @@ from forecastops.registry.store import current
 
 
 class ForecastRow(BaseModel):
+    batch_id: str
     forecast_date: date
     target_date: date
     store_id: str
@@ -133,12 +134,12 @@ def create_app(settings=None, database=None, *, clock=utc_now):
             for key in ["version", "name", "train_end", "horizon", "dataset_sha256", "quality_gate"]
         }
 
-    def retrieve(item, store, horizon, forecast_date, limit, offset):
+    def retrieve(item, store, horizon, forecast_date, limit, offset, batch_id):
         with retrieval.time():
-            rows = db.query(item, store, horizon, forecast_date, limit, offset)
+            rows = db.query(item, store, horizon, forecast_date, limit, offset, batch_id)
         if not rows:
             raise HTTPException(404, "No forecasts for this selection")
-        if forecast_date is None and not batch_ready(rows):
+        if forecast_date is None and batch_id is None and not batch_ready(rows):
             raise HTTPException(
                 503, "Forecast batch is stale or superseded; select a date for history"
             )
@@ -152,8 +153,9 @@ def create_app(settings=None, database=None, *, clock=utc_now):
         forecast_date: date | None = None,
         limit: int = Query(1000, ge=1, le=10000),
         offset: int = Query(0, ge=0),
+        batch_id: str | None = Query(None, pattern="^[a-f0-9]{64}$"),
     ):
-        return retrieve(item_id, store_id, horizon, forecast_date, limit, offset)
+        return retrieve(item_id, store_id, horizon, forecast_date, limit, offset, batch_id)
 
     @app.get("/forecasts/stores/{store_id}", response_model=list[ForecastRow])
     def store_forecasts(
@@ -162,8 +164,9 @@ def create_app(settings=None, database=None, *, clock=utc_now):
         forecast_date: date | None = None,
         limit: int = Query(1000, ge=1, le=10000),
         offset: int = Query(0, ge=0),
+        batch_id: str | None = Query(None, pattern="^[a-f0-9]{64}$"),
     ):
-        return retrieve(None, store_id, horizon, forecast_date, limit, offset)
+        return retrieve(None, store_id, horizon, forecast_date, limit, offset, batch_id)
 
     @app.get("/metrics", include_in_schema=False)
     def prometheus():

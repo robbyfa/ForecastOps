@@ -140,3 +140,75 @@ def test_metrics_fail_closed_for_non_live_reports(daily_forecasts, kind):
         text = client.get("/metrics").text
         assert "forecastops_monitoring_fresh 0.0" in text
         assert "forecastops_production_wape NaN" in text
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_rerun_cannot_rewrite_original_horizon_score(daily_forecasts, late):
+    from sqlalchemy import select
+
+    data, settings, db, _, now = daily_forecasts
+    before = monitor(data, settings, db, now=now)
+    with db.engine.connect() as conn:
+        originals = pd.DataFrame(conn.execute(select(forecasts)).mappings().all())
+    for origin, group in originals.groupby("forecast_date"):
+        issued = (
+            now
+            if late
+            else pd.Timestamp(origin).tz_localize("UTC").to_pydatetime() + timedelta(hours=12)
+        )
+        db.clock = lambda issued=issued: issued
+        rows = group.to_dict("records")
+        for row in rows:
+            row["prediction"] = 10.0  # Replace all bad forecasts with hindsight-perfect values.
+        db.save(rows)
+    after = monitor(data, settings, db, now=now)
+    assert after["by_horizon"] == before["by_horizon"]
+    assert after["coverage"] == 1
+    assert after["retraining_required"]
+
+
+def test_old_model_forecasts_continue_maturing_after_promotion(daily_forecasts):
+    data, settings, db, champion, now = daily_forecasts
+    champion["version"] = "new-model"
+    write_json(settings.artifact_dir / "champion.json", champion)
+    result = monitor(data, settings, db, now=now)
+    assert result["matched_actuals"] == 0
+    assert not result["retraining_required"]
+    assert result["by_model"]["tested"]["by_horizon"]["14"]["performance"]["overall"]["wape"] == 9
+
+
+def test_api_can_retrieve_superseded_batch_by_id(daily_forecasts):
+    data, settings, db, _, now = daily_forecasts
+    rows = db.query()
+    old_id = rows[0]["batch_id"]
+    new_id = db.save([{**row, "model_version": "replacement"} for row in rows])
+    assert new_id != old_id
+    with TestClient(create_app(settings, db, clock=lambda: now)) as client:
+        route = f"/forecasts/items/{rows[0]['item_id']}"
+        old = client.get(route, params={"batch_id": old_id})
+        assert old.status_code == 200
+        assert {row["model_version"] for row in old.json()} == {"tested"}
+        assert {row["batch_id"] for row in old.json()} == {old_id}
+        new = client.get(route, params={"batch_id": new_id})
+        assert {row["model_version"] for row in new.json()} == {"replacement"}
+        assert client.get(route, params={"batch_id": "invalid"}).status_code == 422
+        assert client.get(route, params={"batch_id": "0" * 64}).status_code == 404
+
+
+def test_late_issuance_cannot_masquerade_as_a_long_lead_forecast(daily_forecasts):
+    from sqlalchemy import select
+
+    data, settings, db, _, now = daily_forecasts
+    with db.engine.begin() as conn:
+        origins = conn.execute(select(forecasts.c.forecast_date).distinct()).scalars().all()
+        for origin in origins:
+            # Still before many h=14 targets, but too late for the stated forecast origin.
+            issued = pd.Timestamp(origin).tz_localize("UTC").to_pydatetime() + timedelta(days=2)
+            conn.execute(
+                update(forecasts)
+                .where(forecasts.c.forecast_date == origin)
+                .values(created_at=issued)
+            )
+    live = monitor(data, settings, db, now=now)
+    assert live["matched_actuals"] == 0
+    assert not live["retraining_required"]

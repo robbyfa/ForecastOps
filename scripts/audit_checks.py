@@ -11,12 +11,13 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from forecastops.api.app import create_app
 from forecastops.config.settings import Settings
 from forecastops.data.synthetic import generate
 from forecastops.data.validate import validate
-from forecastops.inference.database import Database
+from forecastops.inference.database import Database, forecasts
 from forecastops.monitoring.reference import build_reference
 from forecastops.monitoring.report import monitor
 from forecastops.registry.store import write_json
@@ -83,7 +84,15 @@ def run(root):
     replacement = rows.copy()
     replacement = [{**row, "model_version": "audit-v2"} for row in replacement]
     db.save(replacement)
-    after = sorted({r["model_version"] for r in db.query(origin=origin)})
+    active = sorted({r["model_version"] for r in db.query(origin=origin)})
+    with db.engine.connect() as conn:
+        retained = sorted(
+            set(
+                conn.execute(
+                    select(forecasts.c.model_version).where(forecasts.c.forecast_date == origin)
+                ).scalars()
+            )
+        )
     db.engine.dispose()
     panel = validate(generate(root / "panel.csv", days=730, stores=3, items=50))
     reference = build_reference(panel, pd.DataFrame({"prediction": [10.0]}))
@@ -102,7 +111,11 @@ def run(root):
             "default_api_status": default_response.status_code,
             "default_api_body": default_response.json(),
         },
-        "batch_replacement": {"previous_version": before, "remaining_versions": after},
+        "batch_replacement": {
+            "previous_version": before,
+            "active_versions": active,
+            "retained_versions": retained,
+        },
         "drift_reference": {
             "total_series": len(panel.groupby(["store_id", "item_id"])),
             "represented_series": len(reference["sampled_series"]),

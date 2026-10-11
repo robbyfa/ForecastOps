@@ -22,6 +22,16 @@ The original findings below are preserved as historical evidence. The subsequent
 
 The local suite now has **52 passing tests**. The [updated diagnostic](remediation-evidence.json) shows all 150 reference series represented, stale metrics suppressed, and longer-horizon errors retained. An isolated real MLflow registration/loading smoke run produced and verified 84 forecasts through the database and FastAPI; this used SQLite, not the remote service stack. A Docker build and network-disabled container check verified revision injection, source/lock hashes and promotion-journal writes on Linux. **F5 remains open:** database reruns still replace issued rows at an origin. No new uncertainty calibration, AWS deployment or M5 retraining is claimed. The frozen benchmark and original diagnostic evidence have not been rewritten to reflect newer code. Filesystem recovery assumes shared POSIX storage and serialized writers, not a distributed transaction or arbitrary tracking-server migration.
 
+## Issuance-history and service-integration update — 2026-10-11
+
+A subsequent change addresses **F5** with content-addressed batch headers, retained forecast rows and a separate transactional active pointer. Identical reruns preserve both batch ID and timestamp; changed predictions/models remain independently retrievable by `batch_id`. The one-time migration preserves surviving legacy rows and timestamps, retains the legacy table, and supports retry after interruption. Originally overwritten legacy evidence cannot be recovered. The [new diagnostic](history-remediation-evidence.json) retains both v1 and v2 while serving v2.
+
+Monitoring now selects the earliest timely prediction per origin/target/series across all versions. Timeliness means issuance within the stated origin UTC day, so late backfills cannot claim a longer forecast lead. Regression tests show that both timely revisions and hindsight-perfect late replacements leave the original bad h=14 score unchanged. Earlier-model forecasts continue to mature in `by_model`; only current-champion forecasts can trigger retraining.
+
+**F8's service-path gap** is addressed by `compose.integration.yml` and `scripts/verify_stack.py`: the isolated container worker trained through HTTP MLflow, registered/promoted its model and published **84 forecasts** to PostgreSQL. The verifier reloaded the model, confirmed idempotent publication, retained two distinct batches, and retrieved old/new batches through the running HTTP API. Historical fixtures correctly fail live readiness. CI now enforces this path and uploads the verification report plus service logs. This remains a local/CI operational test, not AWS deployment evidence.
+
+The suite now contains **66 tests** by default. **Nine database contract cases** additionally pass against PostgreSQL (18 cases when both backends are enabled), covering migration, interrupted migration recovery, concurrent idempotent writes, complete transactional rollback and historical queries. The migration assumes old writers are stopped; application immutability is not protection from privileged SQL mutation. Frozen M5 data/results and existing demo service volumes remain unchanged.
+
 ## Prioritized findings
 
 ### F1 — P1: monitoring discards longer-horizon performance

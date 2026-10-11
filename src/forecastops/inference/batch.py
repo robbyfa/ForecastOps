@@ -51,5 +51,7 @@ def forecast(data, settings, database):
     ]
     rows = future[columns].to_dict("records")
     database.initialize()
-    database.save(rows)
+    batch_id = database.save(rows)
+    for row in rows:
+        row["batch_id"] = batch_id
     return rows
