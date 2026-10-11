@@ -2,7 +2,9 @@
 
 A demand forecasting platform that trains, evaluates, registers, serves, and monitors retail models through reproducible batch workflows.
 
-This repository contains a working local MLOps implementation. The included demo uses **synthetic data**, not Walmart data. M5 ingestion is implemented, but no M5 benchmark or AWS deployment is claimed.
+This repository contains a working local MLOps implementation. The default demo uses **synthetic data**. A separate [frozen M5 experiment](docs/m5-results.md) now records a real-data benchmark on 50 products across three stores; AWS deployment remains unproven.
+
+The [2026-10-11 implementation audit](docs/implementation-audit.md) identifies unresolved monitoring, freshness, promotion-recovery and provenance issues. It includes reproducible diagnostics and measured local service results. Treat this as a prototype pending those corrections.
 
 ```mermaid
 flowchart LR
@@ -151,6 +153,6 @@ uv run pytest -q
 
 CI runs linting, formatting, leakage/validation tests, training and API integration tests, an MLflow demo smoke run, Terraform validation and a Docker build. Synthetic fixtures are generated deterministically in temporary directories. The local suite passes 26 tests; the pinned pandas/NumPy and Starlette/httpx combinations currently emit deprecation warnings.
 
-The [Terraform module](infra/terraform/README.md) defines ECR, S3, ECS/Fargate, EFS and CloudWatch, with external Postgres, MLflow and networking supplied as inputs. A manual GitHub Actions deployment workflow publishes an immutable image and waits for ECS service stability. **No AWS resources have been provisioned, no remote CI run has been observed, and no live cloud reliability claims are made.** The cloud milestone requires account configuration, a reviewed plan, deployment and measured end-to-end evidence.
+The [Terraform module](infra/terraform/README.md) defines ECR, S3, ECS/Fargate, EFS and CloudWatch, with external Postgres, MLflow and networking supplied as inputs. A manual GitHub Actions deployment workflow publishes an immutable image and waits for ECS service stability. The [initial GitHub CI run](https://github.com/robbyfa/ForecastOps/actions/runs/38066120932) passed and its synthetic demo produced 84 forecasts. **No AWS resources have been provisioned and no live cloud reliability claims are made.** The cloud milestone requires account configuration, a reviewed plan, deployment and measured end-to-end evidence.
 
-Next portfolio milestones are a licensed M5 benchmark, calibrated per-horizon intervals, feature-memory optimization, scheduled ingestion, cloud deployment and a production observation period. Core logic lives in Python modules; there are no LLM, agent, vector database or orchestration-framework dependencies in the forecasting system.
+The first [M5 benchmark](docs/m5-results.md) measured XGBoost holdout WAPE of 84.79% versus 102.05% for seasonal naive, a 16.91% relative reduction, on 109,500 observations. Its worse sMAPE and small CV advantage over Ridge are documented alongside the selected WAPE improvement. Next milestones are the audit fixes, calibrated per-horizon intervals, feature-memory optimization, scheduled ingestion, cloud deployment and a production observation period. Core logic lives in Python modules; there are no LLM, agent, vector database or orchestration-framework dependencies in the forecasting system.

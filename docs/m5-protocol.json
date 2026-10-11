@@ -1,0 +1,128 @@
+{
+  "frozen_at": "2026-10-11T05:42:55.781927+00:00",
+  "source": "sales_train_evaluation.csv",
+  "source_files": {
+    "calendar.csv": {
+      "bytes": 103469,
+      "sha256": "d12b5914ef03e66649adf5dd9e996e6602251c22b7a6af8f1f7e3aa12f8860f5"
+    },
+    "sales_train_evaluation.csv": {
+      "bytes": 121736518,
+      "sha256": "4b4a47c44c38380d2a9168216fea8c9ff2f31b1ddb772f8a0995952a038b8aa0"
+    },
+    "sales_train_validation.csv": {
+      "bytes": 120007726,
+      "sha256": "f368e66ed1dbecb48b2cc8fc589bf68b3deddbbb36bf5c88b4d6d0a09b9b6724"
+    },
+    "sample_submission.csv": {
+      "bytes": 5228786,
+      "sha256": "eb7597afbec367475ef25dc6dbbc009b8faa47fa2107252c72a029e3cdf72343"
+    },
+    "sell_prices.csv": {
+      "bytes": 203395785,
+      "sha256": "9da3ad1f8b8ccacdbdc70612191dd375ec24a4ac6625c24b75b3bc60b0bed2ef"
+    }
+  },
+  "stores": [
+    "CA_1",
+    "TX_1",
+    "WI_1"
+  ],
+  "category_counts": {
+    "FOODS": 17,
+    "HOBBIES": 17,
+    "HOUSEHOLD": 16
+  },
+  "items": [
+    "FOODS_1_115",
+    "FOODS_1_119",
+    "FOODS_1_127",
+    "FOODS_2_060",
+    "FOODS_3_005",
+    "FOODS_3_013",
+    "FOODS_3_122",
+    "FOODS_3_139",
+    "FOODS_3_314",
+    "FOODS_3_379",
+    "FOODS_3_411",
+    "FOODS_3_438",
+    "FOODS_3_475",
+    "FOODS_3_483",
+    "FOODS_3_514",
+    "FOODS_3_611",
+    "FOODS_3_787",
+    "HOBBIES_1_034",
+    "HOBBIES_1_037",
+    "HOBBIES_1_093",
+    "HOBBIES_1_154",
+    "HOBBIES_1_200",
+    "HOBBIES_1_255",
+    "HOBBIES_1_309",
+    "HOBBIES_1_355",
+    "HOBBIES_1_385",
+    "HOBBIES_1_393",
+    "HOBBIES_1_423",
+    "HOBBIES_2_018",
+    "HOBBIES_2_037",
+    "HOBBIES_2_054",
+    "HOBBIES_2_069",
+    "HOBBIES_2_084",
+    "HOBBIES_2_128",
+    "HOUSEHOLD_1_080",
+    "HOUSEHOLD_1_139",
+    "HOUSEHOLD_1_199",
+    "HOUSEHOLD_1_243",
+    "HOUSEHOLD_1_351",
+    "HOUSEHOLD_1_395",
+    "HOUSEHOLD_1_469",
+    "HOUSEHOLD_1_492",
+    "HOUSEHOLD_1_498",
+    "HOUSEHOLD_1_507",
+    "HOUSEHOLD_2_060",
+    "HOUSEHOLD_2_174",
+    "HOUSEHOLD_2_188",
+    "HOUSEHOLD_2_293",
+    "HOUSEHOLD_2_403",
+    "HOUSEHOLD_2_454"
+  ],
+  "eligible_counts": {
+    "FOODS": 1306,
+    "HOBBIES": 536,
+    "HOUSEHOLD": 952
+  },
+  "seed": 42,
+  "days": 730,
+  "start_date": "2014-05-24",
+  "end_date": "2016-05-22",
+  "horizon": 14,
+  "folds": 3,
+  "selection_cutoff": "2016-03-27",
+  "parameters": {
+    "seasonal_naive": {
+      "season_length": 7
+    },
+    "moving_average": {
+      "window": 7
+    },
+    "ridge": {
+      "alpha": 10
+    },
+    "xgboost": {
+      "n_estimators": 100,
+      "max_depth": 4,
+      "learning_rate": 0.07,
+      "objective": "reg:squarederror",
+      "tree_method": "hist",
+      "n_jobs": 1
+    }
+  },
+  "eligibility": "Positive finite prices for every initial-training week in all stores",
+  "selection": "Seeded category sampling from sorted IDs; no demand filtering",
+  "missing_evaluation_prices": "Fail; no replacement products and no imputation",
+  "holdout_policy": "Final 14 days for one promotion evaluation; no tuning on results",
+  "availability_assumption": "Sales and weekly price known at end-of-day origin",
+  "limitations": "Balanced mature-product cohort; not full M5 hierarchy or official WRMSSE",
+  "canonical_dataset_sha256": "9ab375143cf22925b245ff6e8adb45bf6a5e4e5deeb47f6f7f946b4865a3161e",
+  "observations": 109500,
+  "series": 150
+}

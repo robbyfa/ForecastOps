@@ -1,0 +1,19 @@
+{
+  "measured_at": "2026-10-11T05:24:33.689953+00:00",
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "dataset": "synthetic: 240 days, 3 stores, 8 items, seed 42",
+  "dataset_sha256": "626c58d1a4192a63aed21ca7b6fc60597d75445f1bcec4173d2f86a1c8411753",
+  "git_commit": "9c556722cbc6d30a037686585b0b054429f1df9d",
+  "observations": 5760,
+  "forecast_rows": 336,
+  "model": "xgboost",
+  "horizon": 14,
+  "folds": 3,
+  "training_wall_seconds": 2.1429843339137733,
+  "batch_wall_seconds": 0.043193249963223934,
+  "process_peak_rss_mib": 421.25,
+  "scope": "Host process; MLflow disabled; SQLite batch",
+  "training_includes": "CV, holdout, final fit, local artifact/report writes",
+  "batch_includes": "Validation, load, features, inference, schema/DB writes",
+  "memory_scope": "Whole process peak: imports, training and batch"
+}

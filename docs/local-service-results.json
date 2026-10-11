@@ -1,0 +1,23 @@
+{
+  "measured_at": "2026-10-11T05:28:05.759694+00:00",
+  "environment": "localhost Docker Compose; synthetic data; one repeated item query",
+  "client_platform": "macOS-26.7.1-arm64-arm-64bit",
+  "client_python": "3.12.12",
+  "url": "http://127.0.0.1:8000/forecasts/items/ITEM_001?store_id=STORE_1&horizon=7",
+  "requests": 10000,
+  "concurrency": 8,
+  "warmup_requests_excluded": 20,
+  "connection_reuse": false,
+  "duration_seconds": 29.72292650002055,
+  "requests_per_second": 336.4406260599234,
+  "error_rate": 0.0,
+  "statuses": {
+    "200": 10000
+  },
+  "latency_ms": {
+    "p50": 13.003791449591517,
+    "p95": 24.2365288431756,
+    "p99": 377.696748811286
+  },
+  "scope": "Closed-loop warm query test; not maximum capacity or an SLO"
+}
