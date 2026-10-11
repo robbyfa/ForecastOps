@@ -1,6 +1,20 @@
 groups:
   - name: forecastops
     rules:
+      - alert: ForecastMonitoringStale
+        expr: forecastops_monitoring_fresh == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Live monitoring is missing, expired, replayed, or has stale actuals
+      - alert: ForecastBatchStale
+        expr: forecastops_forecast_ready == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A fresh batch for the committed champion is unavailable
       - alert: ForecastApiUnavailable
         expr: up{job="forecastops"} == 0
         for: 2m

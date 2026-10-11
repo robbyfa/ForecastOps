@@ -17,6 +17,7 @@ from forecastops.config.settings import Settings
 from forecastops.data.synthetic import generate
 from forecastops.data.validate import validate
 from forecastops.inference.database import Database
+from forecastops.monitoring.reference import build_reference
 from forecastops.monitoring.report import monitor
 from forecastops.registry.store import write_json
 
@@ -48,6 +49,7 @@ def run(root):
         "reference": {"demand": [10] * 60, "price": [1.0] * 60},
         "series_keys": [["A", "B", "FOODS"]],
         "holdout": {"candidate": {"overall": {"wape": 0.1}}},
+        "holdout_by_horizon": {str(h): {"overall": {"wape": 0.1}} for h in range(1, 15)},
     }
     write_json(settings.artifact_dir / "champion.json", champion)
     db = Database(settings.database_url)
@@ -69,13 +71,13 @@ def run(root):
                 }
             )
         db.save(rows)
-    report = monitor(data, settings, db)
+    report = monitor(data, settings, db, replay=True)
     with TestClient(create_app(settings, db)) as client:
         metrics = client.get("/metrics").text
         stale_wape = next(
             s for s in metrics.splitlines() if s.startswith("forecastops_production_wape ")
         )
-        default_forecasts = client.get("/forecasts/items/B").json()
+        default_response = client.get("/forecasts/items/B")
     origin = data.date.iloc[-2].date()
     before = db.query(origin=origin)[0]["model_version"]
     replacement = rows.copy()
@@ -84,7 +86,7 @@ def run(root):
     after = sorted({r["model_version"] for r in db.query(origin=origin)})
     db.engine.dispose()
     panel = validate(generate(root / "panel.csv", days=730, stores=3, items=50))
-    tail = panel.tail(5000)
+    reference = build_reference(panel, pd.DataFrame({"prediction": [10.0]}))
     return {
         "monitoring_lead_time": {
             "fixture": "Daily issuance; h=1 prediction 10, h=2..14 prediction 100, actual 10",
@@ -92,18 +94,20 @@ def run(root):
             "horizon_14_wape": 9.0,
             "coverage": report["coverage"],
             "retraining_required": report["retraining_required"],
+            "would_retrain_in_replay": report["would_retrain"],
         },
         "freshness": {
             "report_as_of": report["as_of"],
             "exported_metric": stale_wape,
-            "default_api_forecast_origin": default_forecasts[0]["forecast_date"],
+            "default_api_status": default_response.status_code,
+            "default_api_body": default_response.json(),
         },
         "batch_replacement": {"previous_version": before, "remaining_versions": after},
         "drift_reference": {
             "total_series": len(panel.groupby(["store_id", "item_id"])),
-            "represented_series": len(tail.groupby(["store_id", "item_id"])),
-            "represented_stores": sorted(tail.store_id.unique()),
-            "rows": len(tail),
+            "represented_series": len(reference["sampled_series"]),
+            "represented_stores": sorted({key[0] for key in reference["sampled_series"]}),
+            "rows": reference["observations"],
         },
     }
 

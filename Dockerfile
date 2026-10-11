@@ -1,4 +1,8 @@
 FROM python:3.12-slim
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=unknown
+ENV FORECASTOPS_GIT_COMMIT=$GIT_COMMIT FORECASTOPS_GIT_DIRTY=$GIT_DIRTY
+LABEL org.opencontainers.image.revision=$GIT_COMMIT
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl \
     && rm -rf /var/lib/apt/lists/*

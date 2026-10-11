@@ -1,0 +1,34 @@
+{
+  "monitoring_lead_time": {
+    "fixture": "Daily issuance; h=1 prediction 10, h=2..14 prediction 100, actual 10",
+    "reported_wape": 8.357142857142858,
+    "horizon_14_wape": 9.0,
+    "coverage": 1.0,
+    "retraining_required": false,
+    "would_retrain_in_replay": true
+  },
+  "freshness": {
+    "report_as_of": "2020-02-29",
+    "exported_metric": "forecastops_production_wape NaN",
+    "default_api_status": 503,
+    "default_api_body": {
+      "detail": "Forecast batch is stale or superseded; select a date for history"
+    }
+  },
+  "batch_replacement": {
+    "previous_version": "audit-v1",
+    "remaining_versions": [
+      "audit-v2"
+    ]
+  },
+  "drift_reference": {
+    "total_series": 150,
+    "represented_series": 150,
+    "represented_stores": [
+      "STORE_1",
+      "STORE_2",
+      "STORE_3"
+    ],
+    "rows": 4200
+  }
+}

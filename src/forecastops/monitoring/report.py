@@ -6,6 +6,7 @@ from sqlalchemy import select
 from forecastops.data.validate import validate
 from forecastops.evaluation.metrics import segmented
 from forecastops.inference.database import forecasts
+from forecastops.monitoring.freshness import data_age, utc_now
 from forecastops.registry.store import current, write_json
 
 
@@ -23,7 +24,8 @@ def psi(reference, observed):
     return float(np.sum((q - p) * np.log(q / p)))
 
 
-def monitor(data, settings, database):
+def monitor(data, settings, database, *, now=None, replay=False):
+    now = now or utc_now()
     data = validate(data)
     champion = current(settings)
     if not champion:
@@ -47,44 +49,95 @@ def monitor(data, settings, database):
         )
         stored = pd.DataFrame(conn.execute(statement).mappings().all())
     performance, matched, coverage = None, 0, 0.0
+    scored = pd.DataFrame()
     if not stored.empty:
         stored["target_date"] = pd.to_datetime(stored.target_date)
-        # One issued prediction per realized series/day: choose latest available origin.
-        stored = stored.sort_values("forecast_date").drop_duplicates(
-            ["store_id", "item_id", "target_date"], keep="last"
-        )
+        stored["forecast_date"] = pd.to_datetime(stored.forecast_date)
+        stored["horizon"] = (stored.target_date - stored.forecast_date).dt.days
+        stored = stored[stored.horizon.between(1, champion["horizon"])]
+        if not replay:
+            issued = pd.to_datetime(stored.created_at, utc=True)
+            # Late backfills cannot count as forecasts issued before the target day.
+            stored = stored[issued.lt(stored.target_date.dt.tz_localize("UTC")) & issued.le(now)]
         scored = stored.merge(
             data.rename(columns={"date": "target_date", "demand": "target"}),
             on=["store_id", "item_id", "target_date"],
             suffixes=("", "_actual"),
-            validate="one_to_one",
+            validate="many_to_one",
         )
         if not scored.empty:
             matched = len(scored)
-            coverage = matched / len(recent)
             performance = segmented(scored)
-    enough = coverage >= 0.8 and matched >= 7
-    score = performance["overall"]["wape"] if performance else None
-    baseline = champion["holdout"]["candidate"]["overall"]["wape"]
+    by_horizon = {}
+    references = champion.get("holdout_by_horizon", {})
+    degraded_horizons = []
+    for horizon in range(1, champion["horizon"] + 1):
+        group = scored[scored.horizon.eq(horizon)] if not scored.empty else scored
+        count = len(group)
+        horizon_coverage = count / len(recent)
+        metrics = segmented(group) if count else None
+        baseline = references.get(str(horizon), {}).get("overall", {}).get("wape")
+        score = metrics["overall"]["wape"] if metrics else None
+        enough = horizon_coverage >= 0.8 and count >= 7
+        degraded = (
+            enough
+            and baseline is not None
+            and score is not None
+            and score > max(baseline * 1.25, baseline + 0.02)
+        )
+        if degraded:
+            degraded_horizons.append(horizon)
+        by_horizon[str(horizon)] = {
+            "matched_actuals": count,
+            "coverage": horizon_coverage,
+            "performance": metrics,
+            "reference_wape": baseline,
+            "status": "awaiting_actuals"
+            if not enough
+            else ("reference_unavailable" if baseline is None else "ready"),
+            "degraded": bool(degraded),
+        }
+    coverage = matched / (len(recent) * champion["horizon"])
     expected = set(map(tuple, champion["series_keys"]))
     actual = set(map(tuple, data[["store_id", "item_id", "category"]].drop_duplicates().values))
     schema_changed = actual != expected
-    degraded = enough and score is not None and score > max(baseline * 1.25, baseline + 0.02)
+    age = data_age(str(data.date.max().date()), now)
+    fresh = 0 <= age <= settings.max_data_age_days
+    eligible = any(v["status"] == "ready" for v in by_horizon.values())
+    would_retrain = bool(degraded_horizons and not schema_changed)
+    status = (
+        "ready"
+        if eligible
+        else (
+            "reference_unavailable"
+            if any(v["status"] == "reference_unavailable" for v in by_horizon.values())
+            else "awaiting_actuals"
+        )
+    )
+    if not replay and not fresh:
+        status = "stale_data"
     report = {
         "model_version": champion["version"],
         "as_of": str(data.date.max().date()),
+        "generated_at": now.isoformat(),
+        "mode": "replay" if replay else "live",
+        "data_age_days": age,
         "drift": drift,
         "performance": performance,
+        "aggregate_policy": "pooled available horizon predictions; triggers are horizon-specific",
+        "by_horizon": by_horizon,
+        "degraded_horizons": degraded_horizons,
         "matched_actuals": matched,
         "coverage": coverage,
         "series_changed": schema_changed,
-        "status": "ready" if enough else "awaiting_actuals",
-        "retraining_required": bool(degraded and not schema_changed),
-        "reason": "performance_degraded" if degraded else "no_performance_trigger",
+        "status": status,
+        "would_retrain": would_retrain,
+        "retraining_required": bool(would_retrain and fresh and not replay),
+        "reason": "performance_degraded" if would_retrain else "no_performance_trigger",
         "drift_alert": any(v["psi"] > 0.2 for v in drift.values()),
     }
-    if not stored.empty:
-        report["prediction_drift_psi"] = psi(reference["demand"], stored.prediction)
+    if not stored.empty and reference.get("prediction"):
+        report["prediction_drift_psi"] = psi(reference["prediction"], stored.prediction)
     write_json(settings.artifact_dir / "monitoring.json", report)
     if report["retraining_required"]:
         write_json(settings.artifact_dir / "retrain-request.json", report)

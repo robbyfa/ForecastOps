@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from forecastops.config.settings import Settings
 from forecastops.inference.database import Database
+from forecastops.monitoring.freshness import data_age, report_freshness, utc_now
 from forecastops.registry.store import current
 
 
@@ -33,7 +34,7 @@ class ForecastRow(BaseModel):
     created_at: datetime
 
 
-def create_app(settings=None, database=None):
+def create_app(settings=None, database=None, *, clock=utc_now):
     settings = settings or Settings()
     settings.prepare()
     db = database or Database(settings.database_url)
@@ -52,6 +53,26 @@ def create_app(settings=None, database=None):
         "forecastops_champion", "Current champion", ["version", "model"], registry=registry
     )
     retrain = Gauge("forecastops_retraining_required", "Retraining trigger", registry=registry)
+    fresh_gauge = Gauge(
+        "forecastops_monitoring_fresh", "Current live monitoring", registry=registry
+    )
+    report_age = Gauge("forecastops_report_age_seconds", "Monitoring report age", registry=registry)
+    actuals_age = Gauge(
+        "forecastops_data_age_days", "Latest actuals age in UTC days", registry=registry
+    )
+    forecast_age = Gauge("forecastops_forecast_age_days", "Latest origin age", registry=registry)
+    forecast_ready = Gauge(
+        "forecastops_forecast_ready", "Current champion batch ready", registry=registry
+    )
+    horizon_wape = Gauge(
+        "forecastops_horizon_wape", "Observed WAPE by lead time", ["horizon"], registry=registry
+    )
+    horizon_coverage = Gauge(
+        "forecastops_horizon_coverage",
+        "Seven-day panel coverage by lead time",
+        ["horizon"],
+        registry=registry,
+    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -85,6 +106,23 @@ def create_app(settings=None, database=None):
         db.healthy()
         return {"status": "ok", "champion_available": current(settings) is not None}
 
+    def batch_ready(rows):
+        meta = current(settings)
+        age = data_age(str(rows[0]["forecast_date"]), clock()) if rows else None
+        return bool(
+            rows
+            and meta
+            and 0 <= age <= settings.max_forecast_age_days
+            and rows[0]["model_version"] == meta["version"]
+        )
+
+    @app.get("/ready")
+    def ready():
+        rows = db.query(limit=1)
+        if not batch_ready(rows):
+            raise HTTPException(503, "No current forecast batch for the committed champion")
+        return {"status": "ready", "forecast_date": rows[0]["forecast_date"]}
+
     @app.get("/models/current")
     def model():
         meta = current(settings)
@@ -100,6 +138,10 @@ def create_app(settings=None, database=None):
             rows = db.query(item, store, horizon, forecast_date, limit, offset)
         if not rows:
             raise HTTPException(404, "No forecasts for this selection")
+        if forecast_date is None and not batch_ready(rows):
+            raise HTTPException(
+                503, "Forecast batch is stale or superseded; select a date for history"
+            )
         return rows
 
     @app.get("/forecasts/items/{item_id}", response_model=list[ForecastRow])
@@ -135,15 +177,35 @@ def create_app(settings=None, database=None):
         coverage.set(0)
         retrain.set(0)
         drift.clear()
+        horizon_wape.clear()
+        horizon_coverage.clear()
+        fresh_gauge.set(0)
+        report_age.set(float("nan"))
+        actuals_age.set(float("nan"))
+        latest = db.query(limit=1)
+        forecast_ready.set(batch_ready(latest))
+        forecast_age.set(
+            data_age(str(latest[0]["forecast_date"]), clock()) if latest else float("nan")
+        )
         if path.exists():
             report = json.loads(path.read_text())
-            if meta and report["model_version"] == meta["version"]:
+            freshness = report_freshness(report, settings, clock())
+            for gauge, key in [(report_age, "report_age_seconds"), (actuals_age, "data_age_days")]:
+                value = freshness[key]
+                gauge.set(value if value is not None else float("nan"))
+            if meta and report["model_version"] == meta["version"] and freshness["fresh"]:
+                fresh_gauge.set(1)
                 coverage.set(report["coverage"])
                 retrain.set(report["retraining_required"])
                 if report["performance"] and report["performance"]["overall"]["wape"] is not None:
                     wape.set(report["performance"]["overall"]["wape"])
                 for feature, value in report["drift"].items():
                     drift.labels(feature).set(value["psi"])
+                for horizon, value in report.get("by_horizon", {}).items():
+                    horizon_coverage.labels(horizon).set(value["coverage"])
+                    score = value["performance"]
+                    if score and score["overall"]["wape"] is not None:
+                        horizon_wape.labels(horizon).set(score["overall"]["wape"])
         return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
     return app

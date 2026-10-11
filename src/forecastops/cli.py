@@ -13,9 +13,14 @@ from forecastops.inference.database import Database
 def main():
     parser = argparse.ArgumentParser(description="ForecastOps reproducible batch workflows")
     subs = parser.add_subparsers(dest="command", required=True)
+    subs.add_parser("reconcile", help="Repair the MLflow alias from the committed champion")
     for name in ["demo", "generate", "validate", "train", "forecast", "monitor", "cycle"]:
         sub = subs.add_parser(name)
         sub.add_argument("--data", type=Path, default=Path("data/raw/demo.csv"))
+        if name == "monitor":
+            sub.add_argument(
+                "--replay", action="store_true", help="Historical scoring; never retrain"
+            )
         if name in ["demo", "generate"]:
             sub.add_argument("--days", type=int, default=240)
             sub.add_argument("--items", type=int, default=8)
@@ -58,10 +63,19 @@ def execute(args, settings):
     from forecastops.data.synthetic import generate
     from forecastops.inference.batch import forecast
     from forecastops.monitoring.report import monitor
-    from forecastops.registry.store import current
+    from forecastops.registry.store import current, reconcile
     from forecastops.training.pipeline import train
 
     command = args.command
+    if command == "reconcile":
+        result = reconcile(settings, force=True)
+        if result["state"] == "pending":
+            raise RuntimeError(
+                "MLflow alias reconciliation pending; retry when registry is available"
+            )
+        return {key: value for key, value in result.items() if key != "registry"}
+    if command in ["forecast", "monitor", "cycle", "demo"]:
+        reconcile(settings)
     if command == "ingest-m5":
         from forecastops.data.m5 import ingest
 
@@ -75,6 +89,7 @@ def execute(args, settings):
     if command in ["generate", "validate"]:
         return {"rows": len(data), "valid": True}
     db = Database(settings.database_url)
+    cycle_result = {}
     if command in ["train", "demo"]:
         report = train(data, settings, tracking=not args.no_tracking)
         if command == "train":
@@ -86,7 +101,7 @@ def execute(args, settings):
         if not current(settings):
             return {"quality_gate": report["quality_gate"], "status": "no_champion"}
     if command in ["monitor", "cycle"]:
-        report = monitor(data, settings, db)
+        report = monitor(data, settings, db, replay=getattr(args, "replay", False))
         if command == "monitor":
             return report
         if report["retraining_required"]:
@@ -94,12 +109,32 @@ def execute(args, settings):
             request_key = f"{report['model_version']}:{report['as_of']}"
             marker = settings.artifact_dir / "last-retrain-request.txt"
             if not marker.exists() or marker.read_text() != request_key:
-                train(data, settings, tracking=not args.no_tracking)
-                marker.write_text(request_key)
+                from datetime import date, timedelta
+
+                eligible_after = date.fromisoformat(current(settings)["train_end"]) + timedelta(
+                    days=settings.horizon
+                )
+                if data.date.max().date() < eligible_after:
+                    cycle_result = {"retraining": "deferred", "eligible_after": eligible_after}
+                else:
+                    try:
+                        trained = train(data, settings, tracking=not args.no_tracking)
+                    except Exception as error:
+                        logging.warning(
+                            "Retraining failed; attempting a batch with committed champion"
+                        )
+                        cycle_result = {"retraining": "failed", "error_type": type(error).__name__}
+                    else:
+                        marker.write_text(request_key)
+                        cycle_result = {
+                            "retraining": "completed",
+                            "quality_gate": trained["quality_gate"],
+                        }
     rows = forecast(data, settings, db)
     if command == "demo":
-        monitor(data, settings, db)
+        monitor(data, settings, db, replay=True)
     return {
+        **cycle_result,
         "forecast_rows": len(rows),
         "model_version": rows[0]["model_version"],
         "forecast_date": rows[0]["forecast_date"],

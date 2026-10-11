@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     max_segment_regression: float = Field(default=0.1, ge=0)
     max_prediction_seconds: float = Field(default=30, gt=0)
     seed: int = 42
+    max_data_age_days: int = Field(default=2, ge=0)
+    max_report_age_seconds: int = Field(default=172800, gt=0)
+    max_forecast_age_days: int = Field(default=2, ge=0)
 
     def prepare(self):
         self.artifact_dir.mkdir(parents=True, exist_ok=True)

@@ -36,12 +36,17 @@ def record(settings, report, bundle, example, promote):
                 }
             )
             mlflow.log_params(PARAMETERS[name])
+            mlflow.log_params(report["gate_configuration"])
             mlflow.set_tags(
                 {
                     "dataset_sha256": report["dataset_sha256"],
                     "git_commit": report["git_commit"],
                     "train_end": report["train_end"],
                     "feature_set": "direct-origin-v1",
+                    "source_sha256": report["provenance"]["source_sha256"],
+                    "dependency_lock_sha256": report["provenance"]["dependency_lock_sha256"],
+                    "working_tree_dirty": report["provenance"]["working_tree_dirty"],
+                    "incumbent_version": report["incumbent_version"] or "none",
                 }
             )
             mlflow.log_metrics({f"cv_{k}": v for k, v in entry["overall"].items() if v is not None})
@@ -71,7 +76,25 @@ def record(settings, report, bundle, example, promote):
                 )
                 version = str(info.registered_model_version)
                 client.set_model_version_tag(MODEL_NAME, version, "quality_gate", str(promote))
-                if promote:
-                    client.set_registered_model_alias(MODEL_NAME, "champion", version)
                 uri = f"models:/{MODEL_NAME}/{version}"
     return {"model_uri": uri, "tracking_uri": settings.tracking_uri}
+
+
+def sync_alias(champion, registry):
+    """The alias is a repairable mirror; serving uses champion.json's version URI."""
+    from mlflow.exceptions import MlflowException
+
+    client = mlflow.MlflowClient(tracking_uri=registry["tracking_uri"])
+    if champion and champion.get("model_uri"):
+        _, name, version = champion["model_uri"].split("/")
+        client.set_registered_model_alias(name, "champion", version)
+    else:
+        _, name, _ = registry["model_uri"].split("/")
+        try:
+            aliases = client.get_registered_model(name).aliases
+        except MlflowException as error:
+            if error.error_code != "RESOURCE_DOES_NOT_EXIST":
+                raise
+        else:
+            if "champion" in aliases:
+                client.delete_registered_model_alias(name, "champion")

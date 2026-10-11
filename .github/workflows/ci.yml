@@ -27,8 +27,9 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest -q
       - run: uv run forecastops demo --days 140 --items 3 --stores 2
+      - run: uv run python scripts/verify_demo.py
       - run: docker compose config --quiet
-      - run: docker build -t forecastops:ci .
+      - run: docker build --build-arg GIT_COMMIT="$GITHUB_SHA" --build-arg GIT_DIRTY=false -t forecastops:ci .
       - uses: actions/upload-artifact@v4
         if: always()
         with:

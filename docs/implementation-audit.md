@@ -8,6 +8,20 @@ Later on 2026-10-11, the user supplied the M5 files and a separate [first real-d
 
 This audit changes no production Python code, model pointers, or deployed infrastructure. It adds diagnostic scripts and evidence. Findings below distinguish executed reproductions from inspection-only risks. P1 means fix before relying on the affected production behavior; P2 means address before the corresponding benchmark/deployment claim.
 
+## Remediation update — 2026-10-11
+
+The original findings below are preserved as historical evidence. The subsequent implementation adds:
+
+- **F1:** per-horizon errors, coverage and matching holdout references; a regression with perfect h=1 and failed h=14 now triggers on h=14. Older reports fail closed without horizon references. Scoring still covers only the current champion.
+- **F2:** UTC data/report age policies, explicit replay mode, late-backfill exclusion, unavailable stale metrics, `/ready`, historical-date API access and freshness alerts. Input actuals themselves still lack availability/version timestamps.
+- **F3:** equal series weighting over the latest 28 training days and genuine CV-prediction drift references. Seasonal/segment-specific drift calibration remains future work.
+- **F4:** a durable pending journal, one authoritative atomic champion pointer, alias updates only after commit, automatic pending recovery and explicit `forecastops reconcile`. Fault-injection tests cover failures before the pointer, after commit, after alias update and during rollback recovery; a real SQLite-backed MLflow registry test verifies aliases and their removal.
+- **F6:** build revision injection, source and dependency-lock digests, dirty/unknown state, incumbent version and gate settings in training evidence and MLflow.
+- **Retraining:** preflight deferral until enough new holdout data exists; failed training still attempts forecasts from the committed champion.
+- **F8 (partial):** CI now asserts that the demo actually promoted, aligned its alias, saved the full batch and served it through FastAPI. Live Postgres plus HTTP MLflow startup in CI is still outstanding.
+
+The local suite now has **52 passing tests**. The [updated diagnostic](remediation-evidence.json) shows all 150 reference series represented, stale metrics suppressed, and longer-horizon errors retained. An isolated real MLflow registration/loading smoke run produced and verified 84 forecasts through the database and FastAPI; this used SQLite, not the remote service stack. A Docker build and network-disabled container check verified revision injection, source/lock hashes and promotion-journal writes on Linux. **F5 remains open:** database reruns still replace issued rows at an origin. No new uncertainty calibration, AWS deployment or M5 retraining is claimed. The frozen benchmark and original diagnostic evidence have not been rewritten to reflect newer code. Filesystem recovery assumes shared POSIX storage and serialized writers, not a distributed transaction or arbitrary tracking-server migration.
+
 ## Prioritized findings
 
 ### F1 — P1: monitoring discards longer-horizon performance

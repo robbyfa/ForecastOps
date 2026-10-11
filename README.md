@@ -4,7 +4,7 @@ A demand forecasting platform that trains, evaluates, registers, serves, and mon
 
 This repository contains a working local MLOps implementation. The default demo uses **synthetic data**. A separate [frozen M5 experiment](docs/m5-results.md) now records a real-data benchmark on 50 products across three stores; AWS deployment remains unproven.
 
-The [2026-10-11 implementation audit](docs/implementation-audit.md) identifies unresolved monitoring, freshness, promotion-recovery and provenance issues. It includes reproducible diagnostics and measured local service results. Treat this as a prototype pending those corrections.
+The [2026-10-11 implementation audit](docs/implementation-audit.md) records the original findings and subsequent fixes. Horizon-aware monitoring, freshness checks, recoverable promotion and container provenance now have regression coverage. Immutable issuance history and the complete Postgres/HTTP-MLflow CI path remain open; treat this as a prototype.
 
 ```mermaid
 flowchart LR
@@ -32,13 +32,13 @@ uv run forecastops demo
 uv run uvicorn forecastops.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open [API documentation](http://localhost:8000/docs). The demo creates 240 days, three stores and eight products, trains four models, logs their experiments, applies promotion gates, then saves fourteen-day forecasts. It refuses to overwrite an existing input file; rerun `train` and `forecast` explicitly, or give a fresh path to `demo --data data/raw/another-demo.csv`.
+Open [API documentation](http://localhost:8000/docs). The synthetic demo uses historical dates; select its explicit `forecast_date` when querying forecasts. `/ready` and default forecast queries intentionally reject stale batches. The demo creates 240 days, three stores and eight products, trains four models, logs their experiments, applies promotion gates, then saves fourteen-day forecasts. It refuses to overwrite an existing input file; rerun `train` and `forecast` explicitly, or give a fresh path to `demo --data data/raw/another-demo.csv`.
 
 ```bash
 uv run forecastops validate --data data/raw/demo.csv
 uv run forecastops train --data data/raw/demo.csv
 uv run forecastops forecast --data data/raw/demo.csv
-uv run forecastops monitor --data data/raw/demo.csv
+uv run forecastops monitor --replay --data data/raw/demo.csv
 uv run mlflow server --backend-store-uri sqlite:///artifacts/mlflow.db --host 127.0.0.1 --port 5000
 ```
 
@@ -108,7 +108,9 @@ The final holdout is used for the promotion decision, so it is an evaluation gat
 
 MLflow records each model's CV metrics, selected-model holdout results, dataset SHA-256, seed, feature version, training cutoff and Git commit when available. The selected artifact is registered even if rejected; only a passing model receives the `champion` alias. This follows MLflow's [alias-based registry workflow](https://mlflow.org/docs/latest/ml/model-registry/workflow/).
 
-Each run also writes a local report, model artifact and fold-level forecast CSVs under `artifacts/runs/<version>/`. `champion.json` pins the promoted MLflow version URI, so later batch jobs load an immutable registered version rather than an alias that could change mid-batch. CLI commands share a filesystem lock. These files are operational state: back them up with the MLflow store. V1 does not provide a distributed transaction across MLflow and the local pointer, so a crash during promotion may require reconciliation; see [the runbook](docs/runbook.md).
+Each run also writes a local report, model artifact and fold-level forecast CSVs under `artifacts/runs/<version>/`. `champion.json` pins the promoted MLflow version URI, so later batch jobs load an immutable registered version rather than an alias that could change mid-batch. CLI commands share a filesystem lock. These files are operational state: back them up with the MLflow store. `champion.json` is the authoritative commit point. Registration does not move the alias: the pipeline saves a pending journal, commits the pointer, then updates the alias. Worker commands retry pending reconciliation; `forecastops reconcile` forces repair from the current pointer, including after rollback. An unavailable alias service leaves `promotion.json` pending and emits a warning. See [the runbook](docs/runbook.md).
+
+Training reports also record source-content and dependency-lock hashes, working-tree state, gate settings and the compared incumbent version. CI and deployment builds inject their revision into the container. Manual builds can supply `--build-arg GIT_COMMIT=$(git rev-parse HEAD)` and an accurate `GIT_DIRTY` value; omitted metadata is explicitly `unknown`.
 
 ## Forecast API
 
@@ -117,18 +119,23 @@ curl 'http://localhost:8000/forecasts/items/ITEM_001?store_id=STORE_1&horizon=7'
 curl 'http://localhost:8000/forecasts/stores/STORE_1?limit=100&offset=0'
 curl 'http://localhost:8000/models/current'
 curl 'http://localhost:8000/health'
+curl 'http://localhost:8000/ready'
 curl 'http://localhost:8000/metrics'
 ```
 
-Responses contain forecast date, target date, series identifiers, prediction, bounds, model version and creation time. Forecast endpoints return a list, with `limit`/`offset` pagination. Use `forecast_date=YYYY-MM-DD` to select a historical batch. The default is the latest global batch; missing products never silently fall back to stale forecasts. Horizons must be 1–14. Writes replace a complete origin-date batch in a database transaction; failed writes roll back.
+Responses contain forecast date, target date, series identifiers, prediction, bounds, model version and creation time. Forecast endpoints return a list, with `limit`/`offset` pagination. Use `forecast_date=YYYY-MM-DD` to select a historical batch. The default is the latest global batch, returning 503 if its origin exceeds the configured age or its model is superseded. Explicit historical queries remain available; missing products never silently fall back to older batches. `/health` checks service/database availability; `/ready` requires a fresh batch for the committed champion. Horizons must be 1–14. Writes replace a complete origin-date batch in a database transaction; failed writes roll back.
 
 ## Monitoring and retraining
 
-`monitor` joins issued forecasts to subsequently observed actuals, using the most recently issued prediction for each store/item/target date and only the current model version. It reports seven-day performance, coverage, demand/price PSI and KS statistics, prediction drift and changed series. Monitoring uses the same strict validation as training, so invalid data fails the job before any retraining can proceed.
+`monitor` scores the current model separately at every lead time. It retains all origin/target pairs, compares each horizon against its matching holdout WAPE, and reports coverage against the full recent seven-day series panel. Live scoring excludes records created at or after the target day's midnight UTC. This conservative issuance cutoff requires timely batch processing; input actuals still lack availability timestamps. Older model reports without horizon references return `reference_unavailable` rather than substituting pooled errors.
 
-Retraining requires at least 80% coverage of the recent seven-day panel and WAPE exceeding both the champion holdout WAPE × 1.25 and an absolute increase of 0.02. Drift alone raises an alert. `cycle` checks current monitoring results, trains once per model/as-of-date trigger, applies the same promotion gates, and issues a new batch. A stale request file never triggers retraining by itself. Run `cycle` after a daily actuals ingestion job using your scheduler; a scheduler is not installed automatically. The initial demo has no later actuals and correctly reports `awaiting_actuals`.
+Retraining requires at least 80% coverage and seven matched observations at a horizon, with its WAPE exceeding both that horizon's holdout WAPE × 1.25 and an absolute increase of 0.02. Any qualifying degraded horizon triggers review/retraining; pooled WAPE is descriptive only. Changed series, stale/future-dated actuals and explicit `monitor --replay` runs cannot trigger automatic retraining. Replay reports expose `would_retrain` for diagnosis and are never exported as live monitoring. The demo uses replay mode.
 
-Prometheus exports HTTP count/latency/5xx, database retrieval latency, champion version, coverage, WAPE, PSI and retraining status. Grafana is provisioned with nine panels. Alert rules exist for service failure, drift and degradation; external notification routing is not configured.
+Drift references use the latest 28 days from every training series with equal series weight. Prediction PSI compares against saved CV predictions. These remain pooled heuristics sensitive to seasonality and mix changes. Drift alone raises an alert.
+
+`cycle` checks the new signal, defers training until a complete post-incumbent holdout exists, applies normal gates, then publishes forecasts. A training failure is reported while still attempting a batch with the committed champion. A stale request file alone never triggers training. Run `cycle` after daily actuals ingestion with your scheduler; scheduling is not installed automatically.
+
+Defaults allow two UTC calendar days of data/forecast age and 48 hours of report age, configured by `FORECASTOPS_MAX_DATA_AGE_DAYS`, `FORECASTOPS_MAX_FORECAST_AGE_DAYS` and `FORECASTOPS_MAX_REPORT_AGE_SECONDS`. Legacy, expired, replayed or future-dated reports export unavailable WAPE and no live retraining signal. Prometheus exposes freshness, ages, readiness and per-horizon WAPE/coverage alongside HTTP and drift metrics. Alerts cover missing/stale monitoring and forecast publication. Grafana's nine existing panels have not yet been expanded for the new horizon metrics; external notification routing is not configured.
 
 ## Measured synthetic demo
 
@@ -151,7 +158,7 @@ uv run ruff format --check .
 uv run pytest -q
 ```
 
-CI runs linting, formatting, leakage/validation tests, training and API integration tests, an MLflow demo smoke run, Terraform validation and a Docker build. Synthetic fixtures are generated deterministically in temporary directories. The local suite passes 26 tests; the pinned pandas/NumPy and Starlette/httpx combinations currently emit deprecation warnings.
+CI runs linting, formatting, leakage/validation tests, training and API integration tests, an MLflow demo smoke run with explicit promotion/alias/database/API assertions, Terraform validation and a Docker build. Synthetic fixtures are generated deterministically in temporary directories. The local suite passes 52 tests; the pinned pandas/NumPy and Starlette/httpx combinations currently emit deprecation warnings.
 
 The [Terraform module](infra/terraform/README.md) defines ECR, S3, ECS/Fargate, EFS and CloudWatch, with external Postgres, MLflow and networking supplied as inputs. A manual GitHub Actions deployment workflow publishes an immutable image and waits for ECS service stability. The [initial GitHub CI run](https://github.com/robbyfa/ForecastOps/actions/runs/38066120932) passed and its synthetic demo produced 84 forecasts. **No AWS resources have been provisioned and no live cloud reliability claims are made.** The cloud milestone requires account configuration, a reviewed plan, deployment and measured end-to-end evidence.
 

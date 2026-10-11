@@ -41,7 +41,9 @@ def test_forecast_api_and_idempotent_storage(trained):
     forecast(sales, settings, db)
     assert len(db.query()) == len(rows)
     assert all(r["lower_bound"] <= r["prediction"] <= r["upper_bound"] for r in rows)
-    with TestClient(create_app(settings, db)) as client:
+    with TestClient(
+        create_app(settings, db, clock=lambda: sales.date.max().tz_localize("UTC").to_pydatetime())
+    ) as client:
         response = client.get("/forecasts/items/ITEM_001?store_id=STORE_1&horizon=7")
         assert response.status_code == 200
         assert len(response.json()) == 7
@@ -54,23 +56,24 @@ def test_forecast_api_and_idempotent_storage(trained):
         assert len(client.get("/forecasts/stores/STORE_1?limit=2&offset=2").json()) == 2
 
 
-def test_monitor_waits_for_actuals_and_detects_degradation(trained):
+def test_one_batch_does_not_meet_per_horizon_monitoring_coverage(trained):
     sales, settings, report = trained
     publish_for_test(settings, report)
     db = Database(settings.database_url)
     rows = forecast(sales, settings, db)
-    waiting = monitor(sales, settings, db)
+    waiting = monitor(sales, settings, db, replay=True)
     assert waiting["status"] == "awaiting_actuals"
     assert not waiting["retraining_required"]
     new = pd.DataFrame(rows).rename(columns={"target_date": "date"})
     new["demand"], new["price"] = 1000, 5
     actuals = pd.concat([sales, new[sales.columns]], ignore_index=True)
     actuals["date"] = pd.to_datetime(actuals.date)
-    degraded = monitor(actuals, settings, db)
-    assert degraded["coverage"] == 1
-    assert degraded["retraining_required"]
+    degraded = monitor(actuals, settings, db, replay=True)
+    assert degraded["coverage"] == pytest.approx(1 / settings.horizon)
+    assert not degraded["retraining_required"]
+    assert degraded["status"] == "awaiting_actuals"
     assert degraded["drift_alert"]
-    assert (settings.artifact_dir / "retrain-request.json").exists()
+    assert not (settings.artifact_dir / "retrain-request.json").exists()
 
 
 def test_no_champion_or_time_travel(sales, settings):

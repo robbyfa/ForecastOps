@@ -34,7 +34,7 @@ jobs:
           ATTEMPT: ${{ github.run_attempt }}
         run: |
           IMAGE="$REGISTRY/$REPOSITORY:$REVISION-$RUN_ID-$ATTEMPT"
-          docker build -t "$IMAGE" .
+          docker build --build-arg GIT_COMMIT="$REVISION" --build-arg GIT_DIRTY=false -t "$IMAGE" .
           docker push "$IMAGE"
           echo "RELEASE_IMAGE=$IMAGE" >> "$GITHUB_ENV"
       - name: Download task definition

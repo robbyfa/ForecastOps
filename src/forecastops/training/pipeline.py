@@ -1,5 +1,5 @@
 import hashlib
-import subprocess
+import os
 import time
 from datetime import UTC, datetime
 
@@ -11,14 +11,17 @@ from forecastops.data.validate import validate
 from forecastops.evaluation.backtest import cutoffs, evaluate
 from forecastops.evaluation.metrics import segmented
 from forecastops.features.build import FEATURES, build
+from forecastops.monitoring.reference import build_reference
 from forecastops.registry.gates import quality_gate
-from forecastops.registry.store import current, write_json
+from forecastops.registry.store import current, promote, reconcile, write_json
 from forecastops.training.models import NAMES, PARAMETERS, fit, predict
+from forecastops.training.provenance import provenance
 
 
 def train(data, settings, tracking=True):
     settings.prepare()
     # CLI/worker must serialize training, inference and monitoring writes.
+    reconcile(settings)
     start = time.perf_counter()
     data = validate(data)
     origins, holdout = cutoffs(data, settings.horizon, settings.folds, settings.min_train_days)
@@ -31,9 +34,10 @@ def train(data, settings, tracking=True):
     ]
     winner = min(candidates, key=lambda n: cv[n]["overall"]["wape"]) if candidates else "ridge"
     names = {winner, "seasonal_naive"}
-    final_scores = {
-        n: evaluate(data, n, [holdout], settings.horizon, settings.seed)[1] for n in names
+    final_results = {
+        n: evaluate(data, n, [holdout], settings.horizon, settings.seed) for n in names
     }
+    final_scores = {n: result[1] for n, result in final_results.items()}
     incumbent_score = None
     incumbent_evaluable = old is None or holdout >= pd.Timestamp(old["train_end"])
     if old and incumbent_evaluable:
@@ -79,18 +83,23 @@ def train(data, settings, tracking=True):
     residuals = np.abs(frames[winner].target - frames[winner].prediction)
     radius = float(np.quantile(residuals, 0.9, method="higher"))
     bundle = {"name": winner, "model": model, "interval_radius": radius}
-    joblib.dump(bundle, run_dir / "model.joblib")
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        commit = "uncommitted"
+    with (run_dir / "model.joblib").open("wb") as artifact:
+        joblib.dump(bundle, artifact)
+        artifact.flush()
+        os.fsync(artifact.fileno())
+    source = provenance()
     report = {
         "version": version,
         "name": winner,
         "dataset_sha256": hashlib.sha256(data.to_csv(index=False).encode()).hexdigest(),
-        "git_commit": commit,
+        "git_commit": source["git_commit"],
+        "provenance": source,
+        "incumbent_version": old["version"] if old else None,
+        "gate_configuration": {
+            "min_improvement": settings.min_improvement,
+            "max_segment_regression": settings.max_segment_regression,
+            "max_prediction_seconds": settings.max_prediction_seconds,
+        },
         "observations": len(data),
         "series": len(data.groupby(["store_id", "item_id"])),
         "train_end": str(data.date.max().date()),
@@ -100,6 +109,9 @@ def train(data, settings, tracking=True):
         "models": cv,
         "parameters": PARAMETERS,
         "holdout": {"candidate": final_scores[winner], "baseline": final_scores["seasonal_naive"]},
+        "holdout_by_horizon": {
+            str(h): segmented(group) for h, group in final_results[winner][0].groupby("horizon")
+        },
         "quality_gate": gate,
         "prediction_seconds": latency,
         "training_seconds": time.perf_counter() - start,
@@ -107,10 +119,7 @@ def train(data, settings, tracking=True):
         "model_path": str((run_dir / "model.joblib").resolve()),
         "interval_radius": radius,
         "interval_method": "pooled CV absolute error 90th percentile",
-        "reference": {
-            "demand": data.demand.tail(5000).tolist(),
-            "price": data.price.tail(5000).tolist(),
-        },
+        "reference": build_reference(data, frames[winner]),
         "series_keys": data[["store_id", "item_id", "category"]].drop_duplicates().values.tolist(),
     }
     for name, frame in frames.items():
@@ -126,5 +135,5 @@ def train(data, settings, tracking=True):
     write_json(run_dir / "report.json", report)
     write_json(settings.artifact_dir / "latest-training.json", report)
     if gate["passed"]:
-        write_json(settings.artifact_dir / "champion.json", report)
+        promote(settings, report)
     return report
