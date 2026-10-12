@@ -1,0 +1,135 @@
+{
+  "measured_at": "2026-10-12T07:20:24.354657+00:00",
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "dataset": "data/processed/m5-50.csv",
+  "provenance": {
+    "git_commit": "unknown",
+    "working_tree_dirty": "unknown",
+    "source_sha256": "aff8c9b65f602dff58369d011a58c061320f5f2f09fad7ae185cbf24d2c0ab7b",
+    "dependency_lock_sha256": "546c67de8ee7bac8213a079b1e1b22e37fda18c77be5c14a44f45985c1226e85"
+  },
+  "cv_wape": {
+    "seasonal_naive": 1.0702022128958413,
+    "moving_average": 0.9035264620918952,
+    "ridge": 0.8993530603414427,
+    "xgboost": 0.8954083740822075
+  },
+  "holdout": {
+    "candidate": {
+      "overall": {
+        "mae": 0.7881241566865217,
+        "rmse": 1.301593120869307,
+        "wape": 0.8478794718451309,
+        "smape": 1.4685937297176401,
+        "bias": -0.06973990096222786
+      },
+      "store_id:CA_1": {
+        "mae": 0.9159031601888793,
+        "rmse": 1.569507417666371,
+        "wape": 0.7809162145337583,
+        "smape": 1.365330973812032,
+        "bias": -0.09839906300817217
+      },
+      "store_id:TX_1": {
+        "mae": 0.6878216571680137,
+        "rmse": 1.0658682032073756,
+        "wape": 0.9668175903968064,
+        "smape": 1.5842979330708866,
+        "bias": -0.04782114654779434
+      },
+      "store_id:WI_1": {
+        "mae": 0.7606476527026721,
+        "rmse": 1.2177870898332879,
+        "wape": 0.8411585416933183,
+        "smape": 1.4561522822700017,
+        "bias": -0.06299949333071708
+      },
+      "category:FOODS": {
+        "mae": 1.03666334213162,
+        "rmse": 1.6307764834613352,
+        "wape": 0.7924813985888401,
+        "smape": 1.2396993161949015,
+        "bias": -0.05460197071568305
+      },
+      "category:HOBBIES": {
+        "mae": 0.5679382567270463,
+        "rmse": 0.8728172975898667,
+        "wape": 1.120187611334561,
+        "smape": 1.652572596712048,
+        "bias": -0.04059631079017949
+      },
+      "category:HOUSEHOLD": {
+        "mae": 0.7579987908580473,
+        "rmse": 1.2880731505093905,
+        "wape": 0.776486566244829,
+        "smape": 1.5163164979039911,
+        "bias": -0.11678901640698314
+      }
+    },
+    "baseline": {
+      "overall": {
+        "mae": 0.9485714285714286,
+        "rmse": 1.7383626669670407,
+        "wape": 1.0204918032786885,
+        "smape": 0.824837785057628,
+        "bias": -0.04
+      },
+      "store_id:CA_1": {
+        "mae": 1.1814285714285715,
+        "rmse": 2.1537342985083905,
+        "wape": 1.007308160779537,
+        "smape": 0.8857859038193817,
+        "bias": 0.09285714285714286
+      },
+      "store_id:TX_1": {
+        "mae": 0.7514285714285714,
+        "rmse": 1.3352367366340483,
+        "wape": 1.0562248995983936,
+        "smape": 0.7704186886875962,
+        "bias": -0.12
+      },
+      "store_id:WI_1": {
+        "mae": 0.9128571428571428,
+        "rmse": 1.6261259835220991,
+        "wape": 1.009478672985782,
+        "smape": 0.8183087626659056,
+        "bias": -0.09285714285714286
+      },
+      "category:FOODS": {
+        "mae": 1.3445378151260505,
+        "rmse": 2.2554012356770485,
+        "wape": 1.0278372591006424,
+        "smape": 0.9842518118756697,
+        "bias": 0.13165266106442577
+      },
+      "category:HOBBIES": {
+        "mae": 0.6274509803921569,
+        "rmse": 1.1787093544622944,
+        "wape": 1.2375690607734806,
+        "smape": 0.7246565292783781,
+        "bias": -0.047619047619047616
+      },
+      "category:HOUSEHOLD": {
+        "mae": 0.8690476190476191,
+        "rmse": 1.6007810593582121,
+        "wape": 0.8902439024390244,
+        "smape": 0.7619029658289113,
+        "bias": -0.21428571428571427
+      }
+    }
+  },
+  "dataset_sha256": "9ab375143cf22925b245ff6e8adb45bf6a5e4e5deeb47f6f7f946b4865a3161e",
+  "git_commit": "unknown",
+  "observations": 109500,
+  "forecast_rows": 2100,
+  "model": "xgboost",
+  "horizon": 14,
+  "folds": 3,
+  "training_wall_seconds": 25.423425124958158,
+  "batch_wall_seconds": 0.15559491701424122,
+  "process_peak_rss_mib": 3228.5,
+  "scope": "Host process; MLflow disabled; SQLite batch",
+  "training_includes": "CV, holdout, final fit, local artifact/report writes",
+  "batch_includes": "Validation, load, features, inference, schema/DB writes",
+  "memory_scope": "Whole process peak: imports, training and batch"
+}

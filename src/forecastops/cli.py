@@ -111,9 +111,9 @@ def execute(args, settings):
             if not marker.exists() or marker.read_text() != request_key:
                 from datetime import date, timedelta
 
-                eligible_after = date.fromisoformat(current(settings)["train_end"]) + timedelta(
-                    days=settings.horizon
-                )
+                eligible_after = date.fromisoformat(
+                    current(settings).get("data_end", current(settings)["train_end"])
+                ) + timedelta(days=settings.horizon)
                 if data.date.max().date() < eligible_after:
                     cycle_result = {"retraining": "deferred", "eligible_after": eligible_after}
                 else:

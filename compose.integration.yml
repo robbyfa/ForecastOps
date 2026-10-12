@@ -49,7 +49,7 @@ services:
   worker:
     <<: *app
     profiles: ["jobs"]
-    command: ["forecastops", "demo", "--days", "140", "--items", "3", "--stores", "2"]
+    command: ["forecastops", "demo", "--days", "168", "--items", "3", "--stores", "2"]
   verifier:
     <<: *app
     profiles: ["jobs"]

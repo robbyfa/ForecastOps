@@ -2,7 +2,7 @@ import pandas as pd
 
 from forecastops.evaluation.metrics import segmented
 from forecastops.features.build import build
-from forecastops.training.models import fit, predict
+from forecastops.training.models import BASELINES, fit, predict
 
 
 def cutoffs(data, horizon, folds, min_train_days):
@@ -18,9 +18,10 @@ def evaluate(data, name, origins, horizon, seed):
     predictions = []
     for origin in origins:
         history = data[data.date.le(origin)]
-        train = build(history, horizon, training=True)
+        train = None if name in BASELINES else build(history, horizon, training=True)
         future = build(history, horizon, training=False)
         model = fit(name, train, seed)
+        del train
         future["prediction"] = predict(name, model, future)
         truth = data[["store_id", "item_id", "date", "demand"]].rename(
             columns={"date": "target_date", "demand": "target"}
@@ -33,3 +34,16 @@ def evaluate(data, name, origins, horizon, seed):
         predictions.append(scored)
     result = pd.concat(predictions, ignore_index=True)
     return result, segmented(result)
+
+
+def score_frozen(data, name, model, origin, horizon):
+    """Score the exact fitted artifact; actuals enter only after prediction."""
+    future = build(data[data.date.le(origin)], horizon, training=False)
+    future["prediction"] = predict(name, model, future)
+    truth = data[["store_id", "item_id", "date", "demand"]].rename(
+        columns={"date": "target_date", "demand": "target"}
+    )
+    scored = future.merge(truth, on=["store_id", "item_id", "target_date"], validate="one_to_one")
+    if len(scored) != len(future):
+        raise ValueError("Missing actuals in evaluation window")
+    return scored, segmented(scored)

@@ -4,14 +4,23 @@ A demand forecasting platform that trains, evaluates, registers, serves, and mon
 
 This repository contains a working local MLOps implementation. The default demo uses **synthetic data**. A separate [frozen M5 experiment](docs/m5-results.md) now records a real-data benchmark on 50 products across three stores; AWS deployment remains unproven.
 
-The [2026-10-11 implementation audit](docs/implementation-audit.md) records the original findings and subsequent fixes. Horizon-aware monitoring, freshness checks, recoverable promotion and container provenance now have regression coverage. Forecast batches now retain immutable issuance history, and an isolated Postgres/HTTP-MLflow/API test exercises the operational path. Cloud deployment and calibrated uncertainty remain unproven; treat this as a prototype.
+The [current audit status](docs/implementation-audit.md) separates resolved issues from remaining limitations; the [original audit and remediation chronology](docs/audit-history-2026-10-11.md) is preserved. Current code includes sparse features, horizon-specific residual calibration, Croston-SBA, immutable issuance history and a Postgres/HTTP-MLflow/API integration check. This remains a local prototype: AWS and sustained production reliability are unproven.
+
+| Evidence | Result | Scope |
+|---|---|---|
+| [Frozen V1 M5 benchmark](docs/m5-results.md) | XGBoost WAPE 84.79%, seasonal 102.05% | Original experiment; unchanged |
+| [Controlled sparse comparison](docs/m5-memory-results.md) | Peak 4,299 → 3,229 MiB; training 54.2 → 25.4s | Same V1 workload, tracking disabled; single runs |
+| [V2 calibration/model comparison](docs/m5-v2-results.md) | 90% target, 88.95% observed coverage | Previously inspected cohort; not independent confirmation |
+
+The complete V2 workload peaked at 3,614 MiB, still above the configured 2-GiB task. Coverage varies by horizon and category; FOODS coverage was 83.19%. These limitations are part of the evidence.
 
 ```mermaid
 flowchart LR
   A[Sales CSV / M5 import] --> B[Strict data validation]
   B --> C[Origin-time features]
   C --> D[Expanding-window backtests]
-  D --> E[Final holdout quality gates]
+  D --> C2[Freeze model and calibrate by horizon]
+  C2 --> E[Final holdout quality gates]
   E --> F[MLflow model registry]
   F --> G[Batch forecasting]
   G --> H[(Postgres / SQLite)]
@@ -32,7 +41,7 @@ uv run forecastops demo
 uv run uvicorn forecastops.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open [API documentation](http://localhost:8000/docs). The synthetic demo uses historical dates; select its explicit `forecast_date` when querying forecasts. `/ready` and default forecast queries intentionally reject stale batches. The demo creates 240 days, three stores and eight products, trains four models, logs their experiments, applies promotion gates, then saves fourteen-day forecasts. It refuses to overwrite an existing input file; rerun `train` and `forecast` explicitly, or give a fresh path to `demo --data data/raw/another-demo.csv`.
+Open [API documentation](http://localhost:8000/docs). The synthetic demo uses historical dates; select its explicit `forecast_date` when querying forecasts. `/ready` and default forecast queries intentionally reject stale batches. The demo creates 240 days, three stores and eight products, trains five models, logs their experiments, applies promotion gates, then saves fourteen-day forecasts. It refuses to overwrite an existing input file; rerun `train` and `forecast` explicitly, or give a fresh path to `demo --data data/raw/another-demo.csv`.
 
 ```bash
 uv run forecastops validate --data data/raw/demo.csv
@@ -83,24 +92,26 @@ uv run forecastops train --data data/processed/m5.csv
 uv run forecastops forecast --data data/processed/m5.csv
 ```
 
-The importer selects common products with complete observed prices and never fabricates pre-launch prices or missing sales. It can fail if too few products satisfy the contract. Start with fewer products on memory-constrained machines: direct multi-horizon training expands the training rows by up to fourteen times and currently uses dense one-hot encoding. Full M5-scale training is not yet optimized or benchmarked. Calendar events and scheduled promotions are deliberately not features in V1.
+The importer selects common products with complete observed prices and never fabricates pre-launch prices or missing sales. It can fail if too few products satisfy the contract. Direct multi-horizon training still expands rows by up to fourteen times. The pipeline now uses categorical DataFrames and CSR model inputs, retaining numeric zeros explicitly for XGBoost. Serving computes rolling features from the final 28 days; Croston state uses the full available history. Full M5-scale training is not benchmarked. Fixed-date calendar flags are supported; retrospective M5 event labels and unannounced promotions are not inputs.
 
 ## Forecasting and promotion rules
 
 The forecast origin is **end of day, after demand is observed**. `lag_1` is that day's observed demand, `lag_7` is six days earlier, and `lag_28` is twenty-seven days earlier. Rolling statistics include the origin day. Models receive the last observed price, price change, store/item/category, target weekday/month/weekend, horizon and historical demand features. They never receive realized target-day prices or sales. Ingestion must enforce that origin-day actuals are genuinely available before the batch runs.
 
-Models are seasonal naive (repeat the last complete week), seven-day mean, Ridge and XGBoost. One direct model predicts horizons 1–14; inference never feeds validation actuals back into its features. The default evaluation uses three expanding-window folds, followed by a separate fourteen-day holdout. All labels in a training fold end on or before its cutoff.
+Models are seasonal naive (repeat the last complete week), seven-day mean, Croston-SBA (alpha 0.1), sparse Ridge and XGBoost. Croston-SBA initializes at the first positive demand and elapsed interval, returns zero before that observation, and updates only on positive demand. Its causal estimate is also a numeric feature. Calendar additions are target month-end, January 1 and December 25; their dates are known at every origin. Future event outcomes and realized prices remain excluded.
+
+One direct model predicts horizons 1–14. The default chronology is three expanding-window selection folds → fit the selected recipe once → two non-overlapping calibration windows → a final fourteen-day holdout. Each origin uses only actuals available through that origin. All training labels end on or before the fit cutoff. The exact fitted model used for calibration and holdout is served without refitting. This costs recent training data but avoids claiming calibration for a different refitted predictor. `FORECASTOPS_CALIBRATION_WINDOWS` controls calibration history. At 90% nominal coverage, each horizon needs at least nine residuals; inadequate samples fail explicitly. With the default 70-day minimum and 14-day horizon, training needs at least 154 daily observations per series.
 
 The CV winner is eligible for promotion only when it:
 
 - Beats the seasonal baseline in every CV window.
 - Improves final-holdout WAPE by at least 2% relative to the baseline and any incumbent.
 - Has no store/category MAE regression above 10% relative to either reference.
-- Generates the configured batch within the thirty-second latency limit.
+- Predicts the in-memory feature batch within the thirty-second limit (feature construction, registry and database latency are measured separately).
 
-The incumbent comparison uses the frozen production artifact. A retraining run needs a full holdout window after the incumbent's training cutoff; overlapping data cannot promote another model. Failed promotion retains the previous champion. With no champion and a failed gate, the system publishes no forecasts. The winning recipe is refitted on all available history only after its evaluation.
+The incumbent comparison uses the frozen production artifact. A retraining run needs a full holdout window after the incumbent's `data_end`, including its prior calibration and test observations; overlapping evaluation data cannot promote another model. Legacy reports use `train_end` as their data cutoff. Failed promotion retains the previous champion. With no champion and a failed gate, the system publishes no forecasts. `train_end` records the frozen fitting cutoff; `data_end` records the latest observations used anywhere in the run.
 
-MAE, RMSE, WAPE, sMAPE and signed bias are stored overall and by store/category. WAPE is a fraction and is `null` when total actual demand is zero. A symmetric interval uses the 90th percentile of pooled CV absolute errors, clipped at zero. These are empirical error bands, **not calibrated coverage guarantees**, and are not horizon-specific.
+MAE, RMSE, WAPE, sMAPE and signed bias are stored overall and by store/category. WAPE is a fraction and is `null` when total actual demand is zero. Each horizon has its own radius from separate calibration residuals, using order statistic `ceil((n+1)*0.9)`. Bounds are symmetric around the point forecast and clipped at zero. Reports save counts, ranks, radii and observed holdout coverage/width overall, by horizon, store and category. Correlated retail series and time drift prevent a distribution-free 90% guarantee. Legacy immutable artifacts retain their original pooled intervals. See [calibration evidence and limitations](docs/m5-v2-results.md).
 
 The final holdout is used for the promotion decision, so it is an evaluation gate rather than an unbiased long-term performance estimate. Repeated human tuning against the same holdout compromises its independence. Use later unseen actuals for the portfolio's final performance claims.
 
@@ -139,7 +150,7 @@ Defaults allow two UTC calendar days of data/forecast age and 48 hours of report
 
 ## Measured synthetic demo
 
-The following results came from the local 2026-10-10 run with 5,760 simulated observations, 24 series, three CV windows and a fourteen-day holdout. They are reproducibility evidence, **not M5 performance**. The [saved results](docs/demo-results.json) record the dataset hash and configuration.
+These historical V1 results came from the local 2026-10-10 run with 5,760 simulated observations, 24 series, three CV windows and a fourteen-day holdout. They are reproducibility evidence, **not M5 performance**. The [saved results](docs/demo-results.json) record the dataset hash and configuration.
 
 | Model | CV WAPE | CV MAE |
 |---|---:|---:|
@@ -158,8 +169,8 @@ uv run ruff format --check .
 uv run pytest -q
 ```
 
-CI runs linting, formatting, leakage/validation tests, training and API integration tests, an MLflow demo smoke run with explicit promotion/alias/database/API assertions, Terraform validation and a Docker build. CI also starts an isolated Postgres/HTTP-MLflow/API stack, runs the container worker, repeats inference to check batch idempotency, and retrieves both original and replacement batches through HTTP. Nine database contract tests run against both SQLite and PostgreSQL, including concurrency, migration recovery and transactional rollback. Synthetic fixtures use temporary directories or disposable test volumes. The local suite passes 66 tests; the pinned pandas/NumPy and Starlette/httpx combinations currently emit deprecation warnings.
+CI runs linting, formatting, leakage/validation tests, training and API integration tests, an MLflow demo smoke run with explicit promotion/alias/database/API assertions, Terraform validation and a Docker build. CI also starts an isolated Postgres/HTTP-MLflow/API stack, runs the container worker, repeats inference to check batch idempotency, and retrieves both original and replacement batches through HTTP. Nine database contract tests run against both SQLite and PostgreSQL, including concurrency, migration recovery and transactional rollback. Synthetic fixtures use temporary directories or disposable test volumes. The local suite passes 72 tests without warnings. Deprecation and future warnings fail tests; other warnings remain visible. Compatible pandas/NumPy and MLflow/SQLAlchemy constraints are documented in `pyproject.toml`, and Starlette uses httpx2. No blanket warning suppression is used.
 
 The [Terraform module](infra/terraform/README.md) defines ECR, S3, ECS/Fargate, EFS and CloudWatch, with external Postgres, MLflow and networking supplied as inputs. A manual GitHub Actions deployment workflow publishes an immutable image and waits for ECS service stability. The [initial GitHub CI run](https://github.com/robbyfa/ForecastOps/actions/runs/38066120932) passed and its synthetic demo produced 84 forecasts. **No AWS resources have been provisioned and no live cloud reliability claims are made.** The cloud milestone requires account configuration, a reviewed plan, deployment and measured end-to-end evidence.
 
-The first [M5 benchmark](docs/m5-results.md) measured XGBoost holdout WAPE of 84.79% versus 102.05% for seasonal naive, a 16.91% relative reduction, on 109,500 observations. Its worse sMAPE and small CV advantage over Ridge are documented alongside the selected WAPE improvement. Next milestones are the audit fixes, calibrated per-horizon intervals, feature-memory optimization, scheduled ingestion, cloud deployment and a production observation period. Core logic lives in Python modules; there are no LLM, agent, vector database or orchestration-framework dependencies in the forecasting system.
+The first [M5 benchmark](docs/m5-results.md) measured XGBoost holdout WAPE of 84.79% versus 102.05% for seasonal naive, a 16.91% relative reduction, on 109,500 observations. Its worse sMAPE and small CV advantage over Ridge are documented alongside the selected WAPE improvement. The V2 follow-up adds sparse features, calibrated per-horizon residual bands and an intermittent-demand baseline. Remaining milestones are lower training memory, improved segment coverage on genuinely new data, scheduled ingestion, cloud deployment and a production observation period. Core logic lives in Python modules; there are no LLM, agent, vector database or orchestration-framework dependencies in the forecasting system.

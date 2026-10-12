@@ -26,6 +26,6 @@ def metrics(actual, predicted):
 def segmented(frame):
     result = {"overall": metrics(frame.target, frame.prediction)}
     for dimension in ["store_id", "category"]:
-        for name, group in frame.groupby(dimension):
+        for name, group in frame.groupby(dimension, observed=True):
             result[f"{dimension}:{name}"] = metrics(group.target, group.prediction)
     return result

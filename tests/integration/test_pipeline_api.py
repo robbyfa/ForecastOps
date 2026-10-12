@@ -21,7 +21,13 @@ def trained(sales, settings):
 
 def test_training_audit_and_gate(trained):
     sales, settings, report = trained
-    assert set(report["models"]) == {"seasonal_naive", "moving_average", "ridge", "xgboost"}
+    assert set(report["models"]) == {
+        "seasonal_naive",
+        "moving_average",
+        "croston_sba",
+        "ridge",
+        "xgboost",
+    }
     assert len(report["dataset_sha256"]) == 64
     assert (settings.artifact_dir / "latest-training.json").exists()
     assert bool(current(settings)) == report["quality_gate"]["passed"]
@@ -41,6 +47,15 @@ def test_forecast_api_and_idempotent_storage(trained):
     forecast(sales, settings, db)
     assert len(db.query()) == len(rows)
     assert all(r["lower_bound"] <= r["prediction"] <= r["upper_bound"] for r in rows)
+    for row in rows:
+        h = (row["target_date"] - row["forecast_date"]).days
+        assert row["upper_bound"] - row["prediction"] == pytest.approx(
+            report["interval"]["by_horizon"][str(h)]["radius"]
+        )
+    # A frozen fitting cutoff predates calibration/test: it is not an eligible
+    # historical issuance date for intervals learned from those later actuals.
+    with pytest.raises(ValueError, match="champion data cutoff"):
+        forecast(sales[sales.date.le(pd.Timestamp(report["train_end"]))], settings, db)
     with TestClient(
         create_app(settings, db, clock=lambda: sales.date.max().tz_localize("UTC").to_pydatetime())
     ) as client:
@@ -91,6 +106,10 @@ def test_failed_retraining_preserves_champion(trained):
     settings.min_improvement = 0.99
     result = train(sales, settings, tracking=False)
     assert not result["quality_gate"]["passed"]
+    assert (
+        "need one complete holdout window after incumbent data cutoff"
+        in result["quality_gate"]["reasons"]
+    )
     assert current(settings)["version"] == report["version"]
 
 

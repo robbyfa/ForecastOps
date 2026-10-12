@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     tracking_uri: str = "sqlite:///artifacts/mlflow.db"
     horizon: int = Field(default=14, ge=1, le=14)
     folds: int = Field(default=3, ge=2, le=12)
+    calibration_windows: int = Field(default=2, ge=1, le=12)
     min_train_days: int = Field(default=70, ge=35)
     min_improvement: float = Field(default=0.02, ge=0, lt=1)
     max_segment_regression: float = Field(default=0.1, ge=0)

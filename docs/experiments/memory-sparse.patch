@@ -1,0 +1,132 @@
+--- a/src/forecastops/features/build.py
++++ b/src/forecastops/features/build.py
+@@ -31,7 +31,11 @@
+     if not 1 <= horizon <= 14:
+         raise ValueError("Horizon must be between 1 and 14")
+     df = history.sort_values([*KEYS, "date"]).copy()
+-    g = df.groupby(KEYS, sort=False)
++    if not training:
++        df = df.groupby(KEYS, sort=False).tail(28).copy()
++    for column in CATEGORICAL:
++        df[column] = df[column].astype("category")
++    g = df.groupby(KEYS, sort=False, observed=True)
+     for lag in [1, 7, 14, 28]:
+         df[f"lag_{lag}"] = g.demand.shift(lag - 1)
+     for window in [7, 28]:
+@@ -39,8 +43,10 @@
+     df["rolling_std_28"] = g.demand.transform(lambda s: s.rolling(28).std(ddof=0))
+     df["price_change"] = g.price.pct_change(fill_method=None)
+     parts = []
++    required = FEATURES + (["target"] if training else [])
+     for h in range(1, horizon + 1):
+-        part = df.copy()
++        selected = df.index if training else df.index[df.date.eq(history.date.max())]
++        part = df.loc[selected].copy()
+         part["origin"] = part.date
+         part["target_date"] = part.date + pd.Timedelta(days=h)
+         part["horizon"] = h
+@@ -50,9 +56,6 @@
+         part["seasonal"] = g.demand.shift(6 - (h - 1) % 7)
+         if training:
+             part["target"] = g.demand.shift(-h)
+-        else:
+-            part = part[part.date.eq(history.date.max())]
+-        parts.append(part)
++        parts.append(part.dropna(subset=required))
+     result = pd.concat(parts, ignore_index=True)
+-    required = FEATURES + (["target"] if training else [])
+-    return result.dropna(subset=required).reset_index(drop=True)
++    return result
+--- /dev/null
++++ b/src/forecastops/features/sparse.py
+@@ -0,0 +1,34 @@
++"""CSR features with explicit numeric zeros for XGBoost's missing-value semantics."""
++
++import numpy as np
++from scipy import sparse
++from sklearn.base import BaseEstimator, TransformerMixin
++from sklearn.preprocessing import OneHotEncoder, StandardScaler
++
++from forecastops.features.build import CATEGORICAL, NUMERIC
++
++
++class SparseFeatures(TransformerMixin, BaseEstimator):
++    def fit(self, frame, y=None):
++        self.numeric_ = list(NUMERIC)
++        self.categorical_ = list(CATEGORICAL)
++        self.encoder_ = OneHotEncoder(handle_unknown="ignore", sparse_output=True)
++        self.encoder_.fit(frame[self.categorical_])
++        self.scaler_ = StandardScaler().fit(frame[self.numeric_])
++        return self
++
++    def transform(self, frame):
++        categorical = self.encoder_.transform(frame[self.categorical_])
++        values = self.scaler_.transform(frame[self.numeric_])
++        rows, columns = values.shape
++        # csr_matrix(dense) would discard numeric zeros, turning them into missing
++        # values in tree boosters. Retain all numeric entries, including zero.
++        numeric = sparse.csr_matrix(
++            (
++                values.ravel(),
++                np.tile(np.arange(columns, dtype=np.int32), rows),
++                np.arange(rows + 1, dtype=np.int32) * columns,
++            ),
++            shape=values.shape,
++        )
++        return sparse.hstack([categorical, numeric], format="csr")
+--- a/src/forecastops/training/models.py
++++ b/src/forecastops/training/models.py
+@@ -1,17 +1,16 @@
+ import numpy as np
+-from sklearn.compose import ColumnTransformer
+ from sklearn.linear_model import Ridge
+ from sklearn.pipeline import make_pipeline
+-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+ from xgboost import XGBRegressor
+ 
+-from forecastops.features.build import CATEGORICAL, FEATURES, NUMERIC
++from forecastops.features.build import FEATURES
++from forecastops.features.sparse import SparseFeatures
+ 
+ NAMES = ["seasonal_naive", "moving_average", "ridge", "xgboost"]
+ PARAMETERS = {
+     "seasonal_naive": {"season_length": 7},
+     "moving_average": {"window": 7},
+-    "ridge": {"alpha": 10},
++    "ridge": {"alpha": 10, "solver": "lsqr", "tol": 1e-8},
+     "xgboost": {
+         "n_estimators": 100,
+         "max_depth": 4,
+@@ -26,16 +25,7 @@
+ def fit(name, frame, seed=42):
+     if name in ["seasonal_naive", "moving_average"]:
+         return None
+-    preprocess = ColumnTransformer(
+-        [
+-            (
+-                "categorical",
+-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+-                CATEGORICAL,
+-            ),
+-            ("numeric", StandardScaler(), NUMERIC),
+-        ]
+-    )
++    preprocess = SparseFeatures()
+     if name == "ridge":
+         estimator = Ridge(**PARAMETERS[name])
+     elif name == "xgboost":
+--- a/src/forecastops/evaluation/backtest.py
++++ b/src/forecastops/evaluation/backtest.py
+@@ -18,7 +18,11 @@
+     predictions = []
+     for origin in origins:
+         history = data[data.date.le(origin)]
+-        train = build(history, horizon, training=True)
++        train = (
++            None
++            if name in {"seasonal_naive", "moving_average"}
++            else build(history, horizon, training=True)
++        )
+         future = build(history, horizon, training=False)
+         model = fit(name, train, seed)
+         future["prediction"] = predict(name, model, future)

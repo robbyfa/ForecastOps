@@ -3,9 +3,10 @@ from pathlib import Path
 
 import mlflow
 import mlflow.pyfunc
+import pandas as pd
 from mlflow.models import infer_signature
 
-from forecastops.features.build import FEATURES
+from forecastops.features.serving import model_input
 from forecastops.training.models import PARAMETERS, predict
 
 MODEL_NAME = "forecastops-demand"
@@ -16,7 +17,7 @@ class ForecastModel(mlflow.pyfunc.PythonModel):
         self.name = name
         self.estimator = estimator
 
-    def predict(self, context, model_input, params=None):
+    def predict(self, context, model_input: pd.DataFrame, params=None):
         return predict(self.name, self.estimator, model_input)
 
 
@@ -32,7 +33,7 @@ def record(settings, report, bundle, example, promote):
                     "seed": settings.seed,
                     "horizon": settings.horizon,
                     "folds": settings.folds,
-                    "feature_set": "direct-origin-v1",
+                    "feature_set": "direct-origin-v2-sparse-calendar-sba",
                 }
             )
             mlflow.log_params(PARAMETERS[name])
@@ -42,7 +43,7 @@ def record(settings, report, bundle, example, promote):
                     "dataset_sha256": report["dataset_sha256"],
                     "git_commit": report["git_commit"],
                     "train_end": report["train_end"],
-                    "feature_set": "direct-origin-v1",
+                    "feature_set": "direct-origin-v2-sparse-calendar-sba",
                     "source_sha256": report["provenance"]["source_sha256"],
                     "dependency_lock_sha256": report["provenance"]["dependency_lock_sha256"],
                     "working_tree_dirty": report["provenance"]["working_tree_dirty"],
@@ -61,7 +62,7 @@ def record(settings, report, bundle, example, promote):
                 mlflow.log_metric("training_seconds", report["training_seconds"])
                 mlflow.log_dict(report, "backtest_report.json")
                 model = ForecastModel(name, bundle["model"])
-                inputs = example[FEATURES].head(5)
+                inputs = model_input(example.head(5))
                 info = mlflow.pyfunc.log_model(
                     name="model",
                     python_model=model,

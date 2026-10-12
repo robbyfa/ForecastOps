@@ -4,11 +4,11 @@ import time
 from datetime import UTC, datetime
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from forecastops.data.validate import validate
-from forecastops.evaluation.backtest import cutoffs, evaluate
+from forecastops.evaluation.backtest import cutoffs, evaluate, score_frozen
+from forecastops.evaluation.intervals import calibrate, coverage
 from forecastops.evaluation.metrics import segmented
 from forecastops.features.build import FEATURES, build
 from forecastops.monitoring.reference import build_reference
@@ -24,7 +24,15 @@ def train(data, settings, tracking=True):
     reconcile(settings)
     start = time.perf_counter()
     data = validate(data)
-    origins, holdout = cutoffs(data, settings.horizon, settings.folds, settings.min_train_days)
+    # Selection labels end before calibration; calibration labels end before test.
+    holdout = data.date.max() - pd.Timedelta(days=settings.horizon)
+    calibration_origins = [
+        holdout - pd.Timedelta(days=settings.horizon * i)
+        for i in range(settings.calibration_windows, 0, -1)
+    ]
+    fit_end = calibration_origins[0]
+    selection_data = data[data.date.le(fit_end + pd.Timedelta(days=settings.horizon))]
+    origins, _ = cutoffs(selection_data, settings.horizon, settings.folds, settings.min_train_days)
     old = current(settings)
     cv, frames = {}, {}
     for name in NAMES:
@@ -34,12 +42,25 @@ def train(data, settings, tracking=True):
     ]
     winner = min(candidates, key=lambda n: cv[n]["overall"]["wape"]) if candidates else "ridge"
     names = {winner, "seasonal_naive"}
+    model = fit(winner, build(data[data.date.le(fit_end)], settings.horizon, True), settings.seed)
+    calibration = pd.concat(
+        [
+            score_frozen(data, winner, model, origin, settings.horizon)[0]
+            for origin in calibration_origins
+        ],
+        ignore_index=True,
+    )
+    interval = calibrate(calibration, settings.horizon)
     final_results = {
-        n: evaluate(data, n, [holdout], settings.horizon, settings.seed) for n in names
+        n: score_frozen(data, n, model if n == winner else None, holdout, settings.horizon)
+        for n in names
     }
+    interval_metrics, holdout_frame = coverage(final_results[winner][0], interval)
     final_scores = {n: result[1] for n, result in final_results.items()}
     incumbent_score = None
-    incumbent_evaluable = old is None or holdout >= pd.Timestamp(old["train_end"])
+    incumbent_evaluable = old is None or holdout >= pd.Timestamp(
+        old.get("data_end", old["train_end"])
+    )
     if old and incumbent_evaluable:
         frozen = joblib.load(old["model_path"])
         inputs = build(data[data.date.le(holdout)], settings.horizon, False)
@@ -50,7 +71,6 @@ def train(data, settings, tracking=True):
         incumbent_score = segmented(
             inputs.merge(truth, on=["store_id", "item_id", "target_date"], validate="one_to_one")
         )
-    model = fit(winner, build(data, settings.horizon, True), settings.seed)
     future = build(data, settings.horizon, False)
     latency_start = time.perf_counter()
     predict(winner, model, future)
@@ -66,7 +86,7 @@ def train(data, settings, tracking=True):
     )
     if not incumbent_evaluable:
         gate["passed"] = False
-        gate["reasons"].append("need one complete holdout window after incumbent training cutoff")
+        gate["reasons"].append("need one complete holdout window after incumbent data cutoff")
     # Require baseline improvement on every CV window, not only on the pooled metric.
     for origin in origins:
         from forecastops.evaluation.metrics import metrics
@@ -80,9 +100,9 @@ def train(data, settings, tracking=True):
     version = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = settings.artifact_dir / "runs" / version
     run_dir.mkdir(parents=True)
-    residuals = np.abs(frames[winner].target - frames[winner].prediction)
-    radius = float(np.quantile(residuals, 0.9, method="higher"))
-    bundle = {"name": winner, "model": model, "interval_radius": radius}
+    bundle = {"name": winner, "model": model, "interval": interval}
+    calibration.to_csv(run_dir / "calibration.csv", index=False)
+    holdout_frame.to_csv(run_dir / "holdout.csv", index=False)
     with (run_dir / "model.joblib").open("wb") as artifact:
         joblib.dump(bundle, artifact)
         artifact.flush()
@@ -102,7 +122,10 @@ def train(data, settings, tracking=True):
         },
         "observations": len(data),
         "series": len(data.groupby(["store_id", "item_id"])),
-        "train_end": str(data.date.max().date()),
+        "train_end": str(fit_end.date()),
+        "data_end": str(data.date.max().date()),
+        "calibration_origins": [str(d.date()) for d in calibration_origins],
+        "calibration_windows": settings.calibration_windows,
         "horizon": settings.horizon,
         "cv_origins": [str(d.date()) for d in origins],
         "holdout_origin": str(holdout.date()),
@@ -117,8 +140,9 @@ def train(data, settings, tracking=True):
         "training_seconds": time.perf_counter() - start,
         "features": FEATURES,
         "model_path": str((run_dir / "model.joblib").resolve()),
-        "interval_radius": radius,
-        "interval_method": "pooled CV absolute error 90th percentile",
+        "interval": interval,
+        "interval_holdout": interval_metrics,
+        "interval_method": interval["method"],
         "reference": build_reference(data, frames[winner]),
         "series_keys": data[["store_id", "item_id", "category"]].drop_duplicates().values.tolist(),
     }
