@@ -5,7 +5,8 @@
     "Same cohort/test dates already inspected in V1; not new independent ML evidence.",
     "Selection windows shifted earlier to reserve two calibration windows.",
     "Correlated series and temporal drift preclude a distribution-free coverage guarantee.",
-    "MLflow disabled; host process, SQLite batch; single measurement."
+    "MLflow disabled; host process, SQLite batch; single measurement.",
+    "The frozen cohort used price availability through 2016-03-27, later than the first two V2 selection origins; those earlier folds are retrospective cohort diagnostics."
   ],
   "platform": "macOS-26.7.1-arm64-arm-64bit",
   "report": {

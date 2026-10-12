@@ -14,6 +14,8 @@ Dataset: 109,500 rows, 150 series, 730 days; canonical SHA-256 `9ab375143cf22925
 - Target coverage 90%; radius is the 271st smallest of 300 absolute residuals at each horizon (`ceil(301 × 0.9)`). Lower bounds clip to zero.
 - Three selection windows shift earlier than V1 to reserve calibration. Sparse encoding, calendar/SBA features and model list also changed; score differences cannot be attributed to a single change.
 
+The frozen cohort used price availability through 2016-03-27, later than the first two V2 selection origins; those earlier folds are retrospective cohort diagnostics. The fixed cohort was retained for comparability; this does not establish prospective performance at those earlier dates.
+
 ## Point forecasts
 
 | Model | CV WAPE |

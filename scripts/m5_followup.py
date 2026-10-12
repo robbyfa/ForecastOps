@@ -82,6 +82,7 @@ def main():
         "limitations": [
             "Same cohort/test dates already inspected in V1; not new independent ML evidence.",
             "Selection windows shifted earlier to reserve two calibration windows.",
+            "Cohort price eligibility used 2016-03-27, after the first two V2 selection origins.",
             "Correlated series and temporal drift preclude a distribution-free coverage guarantee.",
             "MLflow disabled; host process, SQLite batch; single measurement.",
         ],
